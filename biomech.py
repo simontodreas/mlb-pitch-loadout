@@ -57,23 +57,13 @@ def biomech_threshold_coverage(
     min_pitches=100,
     biomech_features=BIOMECH_FEATURES,
 ):
-    """
-    For each threshold, compute the distribution of comp counts across all
-    pitchers. Helps pick a biomech_distance_threshold that gives reasonable
-    coverage without pulling in dissimilar pitchers.
-
-    Only the most recent year per pitcher is counted as a candidate target,
-    but all pitcher-years are eligible as comps.
-    """
-
     biomech_dist = compute_euclidean_distances(
         pitcher_summ,
         features=biomech_features,
         label_cols=['player_name', 'game_year'],
         min_pitches=min_pitches,
     )
-    
-    # One row per pitcher: most recent year only, as the target population
+
     targets = (
         pitcher_summ[pitcher_summ['n'] >= min_pitches]
         .sort_values('game_year', ascending=False)
@@ -81,30 +71,51 @@ def biomech_threshold_coverage(
         [['player_name', 'game_year']]
     )
 
+    left = biomech_dist.merge(
+        targets, left_on=['player_name1', 'game_year1'], right_on=['player_name', 'game_year']
+    )[['player_name', 'game_year', 'player_name2', 'game_year2', 'distance']].rename(
+        columns={'player_name2': 'comp_pitcher', 'game_year2': 'comp_year'}
+    )
+
+    right = biomech_dist.merge(
+        targets, left_on=['player_name2', 'game_year2'], right_on=['player_name', 'game_year']
+    )[['player_name', 'game_year', 'player_name1', 'game_year1', 'distance']].rename(
+        columns={'player_name1': 'comp_pitcher', 'game_year1': 'comp_year'}
+    )
+
+    target_pairs = pd.concat([left, right], ignore_index=True)
+
+    # Remove self-comparisons
+    target_pairs = target_pairs[target_pairs['player_name'] != target_pairs['comp_pitcher']]
+
+    # Deduplicate comp pitcher-years: keep only the closest year per comp,
+    # mirroring the drop_duplicates logic in suggest_pitches
+    target_pairs = (
+        target_pairs
+        .sort_values('distance')
+        .drop_duplicates(subset=['player_name', 'game_year', 'comp_pitcher'])
+        .reset_index(drop=True)
+    )
+
     rows = []
     for threshold in thresholds:
-        comp_counts = []
-        for _, row in targets.iterrows():
-            name, year = row['player_name'], row['game_year']
-            mask = (
-                (biomech_dist['player_name1'] == name) & (biomech_dist['game_year1'] == year)
-            ) | (
-                (biomech_dist['player_name2'] == name) & (biomech_dist['game_year2'] == year)
-            )
-            n_comps = (biomech_dist[mask]['distance'] <= threshold).sum()
-            comp_counts.append(n_comps)
-
-        comp_counts = np.array(comp_counts)
+        comp_counts = (
+            target_pairs[target_pairs['distance'] <= threshold]
+            .groupby(['player_name', 'game_year'])
+            .size()
+            .reindex(pd.MultiIndex.from_frame(targets), fill_value=0)
+            .values
+        )
 
         rows.append({
-            'threshold':    threshold,
-            'mean_comps':   round(comp_counts.mean(), 1),
-            'p10_comps':    int(np.percentile(comp_counts, 10)),
-            'p25_comps':    int(np.percentile(comp_counts, 25)),
-            'p50_comps':    int(np.percentile(comp_counts, 50)),
-            'p75_comps':    int(np.percentile(comp_counts, 75)),
-            'pct_zero':     round((comp_counts == 0).mean() * 100, 1),
-            'pct_lt5':      round((comp_counts < 5).mean() * 100, 1),
+            'threshold':  threshold,
+            'mean_comps': round(comp_counts.mean(), 1),
+            'p10_comps':  int(np.percentile(comp_counts, 10)),
+            'p25_comps':  int(np.percentile(comp_counts, 25)),
+            'p50_comps':  int(np.percentile(comp_counts, 50)),
+            'p75_comps':  int(np.percentile(comp_counts, 75)),
+            'pct_zero':   round((comp_counts == 0).mean() * 100, 1),
+            'pct_lt5':    round((comp_counts < 5).mean() * 100, 1),
         })
 
     df = pd.DataFrame(rows)
