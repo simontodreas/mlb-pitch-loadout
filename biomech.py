@@ -2,6 +2,8 @@ from distances import compute_euclidean_distances, compute_mahalanobis_distances
 import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr
+import matplotlib.pyplot as plt
+
 
 # Constants
 BIOMECH_FEATURES = ['release_extension', 'arm_angle', 'max_velo', 'active_spin_fastball']
@@ -122,3 +124,101 @@ def biomech_threshold_coverage(
     print("── Biomech threshold coverage ──")
     print(df.to_string(index=False))
     return df
+
+
+def biomech_threshold_calibration(
+    pitcher_summ,
+    arsenal_comp,
+    biomech_features=BIOMECH_FEATURES,
+    min_pitches=100,
+    n_bins=20,
+    max_biomech_dist=None,
+):
+    """
+    Bin pitcher pairs by biomechanical distance and compute mean/median arsenal
+    distance within each bin. Helps calibrate a biomech threshold by showing
+    where the biomech→arsenal signal holds vs. degrades.
+
+    Parameters:
+        pitcher_summ      : pitcher-level summary DataFrame
+        arsenal_comp      : arsenal distance DataFrame from compare_all_arsenals()
+        biomech_features  : list of biomechanical feature columns
+        min_pitches       : minimum pitches filter passed to distance function
+        n_bins            : number of equal-width bins for biomech distance
+        max_biomech_dist  : if set, drop pairs with biomech distance above this value
+                            before binning (trims the long right tail)
+
+    Returns:
+        bin_df : DataFrame with columns:
+                   biomech_bin_mid  – bin midpoint
+                   mean_arsenal     – mean arsenal distance in that bin
+                   median_arsenal   – median arsenal distance in that bin
+                   n_pairs          – number of pairs in the bin
+    """
+    biomech_dist = compute_euclidean_distances(
+        pitcher_summ,
+        features=biomech_features,
+        label_cols=['player_name', 'game_year'],
+        min_pitches=min_pitches,
+    )
+
+    arsenal_both = pd.concat([
+        arsenal_comp[['player_name1', 'game_year1', 'player_name2', 'game_year2', 'arsenal_distance']],
+        arsenal_comp.rename(columns={
+            'player_name1': 'player_name2', 'game_year1': 'game_year2',
+            'player_name2': 'player_name1', 'game_year2': 'game_year1',
+        })[['player_name1', 'game_year1', 'player_name2', 'game_year2', 'arsenal_distance']],
+    ])
+    arsenal_lookup = arsenal_both.set_index(
+        ['player_name1', 'game_year1', 'player_name2', 'game_year2']
+    )['arsenal_distance']
+
+    merged = biomech_dist.copy()
+    merged['arsenal_distance'] = merged.apply(
+        lambda r: arsenal_lookup.get(
+            (r['player_name1'], r['game_year1'], r['player_name2'], r['game_year2']), np.nan
+        ),
+        axis=1,
+    )
+    merged = merged.dropna(subset=['arsenal_distance'])
+
+    if max_biomech_dist is not None:
+        merged = merged[merged['distance'] <= max_biomech_dist]
+
+    merged['biomech_bin'] = pd.cut(merged['distance'], bins=n_bins)
+
+    rows = []
+    for bin_interval, group in merged.groupby('biomech_bin', observed=True):
+        rows.append({
+            'biomech_bin_mid': round(bin_interval.mid, 3),
+            'mean_arsenal':    round(group['arsenal_distance'].mean(), 4),
+            'median_arsenal':  round(group['arsenal_distance'].median(), 4),
+            'n_pairs':         len(group),
+        })
+
+    bin_df = pd.DataFrame(rows)
+    print("── Biomech threshold calibration ──")
+    print(bin_df.to_string(index=False))
+    return bin_df
+
+
+def plot_threshold_calibration(bin_df):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+
+    ax1.plot(bin_df['biomech_bin_mid'], bin_df['mean_arsenal'],
+             color='steelblue', lw=2, marker='o', ms=4, label='Mean')
+    ax1.plot(bin_df['biomech_bin_mid'], bin_df['median_arsenal'],
+             color='steelblue', lw=1.5, ls='--', marker='o', ms=3, alpha=0.6,
+             label='Median')
+    ax1.set_ylabel('Arsenal distance')
+    ax1.legend(fontsize=9)
+    ax1.set_title('Arsenal distance vs. biomechanical distance bin')
+
+    ax2.bar(bin_df['biomech_bin_mid'], bin_df['n_pairs'],
+            width=(bin_df['biomech_bin_mid'].iloc[1] - bin_df['biomech_bin_mid'].iloc[0]) * 0.85,
+            color='steelblue', alpha=0.5)
+    ax2.set_ylabel('Number of pairs')
+    ax2.set_xlabel('Biomechanical distance (bin midpoint)')
+
+    plt.tight_layout()
+    plt.show()
