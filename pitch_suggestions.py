@@ -190,7 +190,7 @@ def suggest_pitches(
         sample_scores = silhouette_samples(X_novel, best_labels)
         novel['_sil'] = sample_scores
         cluster_mean_sil = novel.groupby('cluster')['_sil'].mean()
-        MIN_CLUSTER_SIL = 0.4         
+        MIN_CLUSTER_SIL = 0#.4         
         keep_clusters = cluster_mean_sil[cluster_mean_sil >= MIN_CLUSTER_SIL].index
         novel = novel[novel['cluster'].isin(keep_clusters)].copy()
         #novel = novel.drop(columns='_sil').reset_index(drop=True)
