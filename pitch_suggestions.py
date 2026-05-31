@@ -14,96 +14,49 @@ from sklearn.metrics import silhouette_samples
 BIOMECH_FEATURES    = ['release_extension', 'arm_angle', 'max_velo', 'active_spin_fastball']
 PITCH_CHAR_FEATURES = ['release_speed', 'pfx_x', 'pfx_z']
 
-# Suggest pitches for a target pitcher based on biomechanical similarity to comps and novelty of pitch characteristics
-def suggest_pitches(
-    target_pitcher,
-    pitcher_summ,
-    pitch_type_summ,
-    biomech_distance_threshold=2.0,
-    novelty_distance_threshold=1.5,
-    min_comp_usage_pct=0.05,
-    min_pitches=20,
-    biomech_features=BIOMECH_FEATURES,
-    pitch_features=PITCH_CHAR_FEATURES,
-):
-    # ── 1. Identify target's most recent year ─────────────────────────────────
-    # CHANGED: filter to most recent game_year instead of just player_name
-    target_rows = pitcher_summ[pitcher_summ['player_name'] == target_pitcher]
-    if target_rows.empty:
-        return {
-            'status':         'pitcher_not_found',
-            'target_info':    None,
-            'comps':          pd.DataFrame(),
-            'comp_pitches':   pd.DataFrame(),
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': pd.DataFrame(),
-        }
-    target_year = target_rows['game_year'].max()
-    target_row  = target_rows.loc[target_rows['game_year'].idxmax()]
 
-    # ── 2. Biomechanical distances on full multi-year pitcher_summ ────────────
-    # CHANGED: label_cols now includes game_year so each row is a pitcher-year
-    # pair, making the distance matrix unambiguous
+def _find_target(pitcher_summ, target_pitcher):
+    """Returns (target_row, target_year) or (None, None) if pitcher not found."""
+    rows = pitcher_summ[pitcher_summ['player_name'] == target_pitcher]
+    if rows.empty:
+        return None, None
+    year = rows['game_year'].max()
+    row  = rows.loc[rows['game_year'].idxmax()]
+    return row, year
+
+
+def _find_biomech_comps(pitcher_summ, target_pitcher, target_year,
+                        biomech_features, biomech_distance_threshold, min_pitches):
+    """
+    Returns a DataFrame (comp_pitcher, comp_year, distance) of biomechanically
+    similar pitchers, deduplicated to the closest year per comp.
+    """
     biomech_dist = compute_euclidean_distances(
         pitcher_summ,
         features=biomech_features,
         label_cols=['player_name', 'game_year'],
         min_pitches=min_pitches,
     )
-
-    # ── 3. Filter to rows involving the target's most recent year only ─────────
-    # CHANGED: match on both player_name and game_year to exclude the target's
-    # own prior years and anchor distances to the current version of the pitcher
     target_mask = (
-        (
-            (biomech_dist['player_name1'] == target_pitcher) &
-            (biomech_dist['game_year1']   == target_year)
-        ) | (
-            (biomech_dist['player_name2'] == target_pitcher) &
-            (biomech_dist['game_year2']   == target_year)
-        )
+        ((biomech_dist['player_name1'] == target_pitcher) & (biomech_dist['game_year1'] == target_year)) |
+        ((biomech_dist['player_name2'] == target_pitcher) & (biomech_dist['game_year2'] == target_year))
     )
-    target_dists = biomech_dist[target_mask].copy()
-
-    # Normalise so comp is always in comp_pitcher / comp_year columns
-    is_left = (target_dists['player_name1'] == target_pitcher)
-    target_dists['comp_pitcher'] = np.where(
-        is_left, target_dists['player_name2'], target_dists['player_name1']
-    )
-    target_dists['comp_year'] = np.where(
-        is_left, target_dists['game_year2'], target_dists['game_year1']
-    )
-    target_dists = (
-        target_dists[['comp_pitcher', 'comp_year', 'distance']]
+    dists   = biomech_dist[target_mask].copy()
+    is_left = dists['player_name1'] == target_pitcher
+    dists['comp_pitcher'] = np.where(is_left, dists['player_name2'], dists['player_name1'])
+    dists['comp_year']    = np.where(is_left, dists['game_year2'],   dists['game_year1'])
+    return (
+        dists[['comp_pitcher', 'comp_year', 'distance']]
         .query('distance <= @biomech_distance_threshold')
-        .reset_index(drop=True)
-    )
-
-    # ── 4. Deduplicate comps: keep the year closest to the target ─────────────
-    # CHANGED: a comp pitcher may appear in multiple years; we keep only the
-    # year with the smallest biomechanical distance to the current target
-    target_dists = (
-        target_dists
         .sort_values('distance')
         .drop_duplicates(subset='comp_pitcher', keep='first')
         .reset_index(drop=True)
     )
 
-    if target_dists.empty:
-        return {
-            'status':         'no_comps',
-            'target_info':    target_row,
-            'comps':          target_dists,
-            'comp_pitches':   pd.DataFrame(),
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': pd.DataFrame(),
-        }
 
-    # ── 5. Collect pitches using year-specific lookups ────────────────────────
-    # CHANGED: target pitches use target_year only; comp pitches use each
-    # comp's best year from the lookup built in step 4
-
-    # Target pitches: most recent year only
+def _collect_pitches(pitch_type_summ, target_pitcher, target_year, target_dists,
+                     pitch_features, min_comp_usage_pct, min_pitches):
+    """Returns (target_pitches, comp_pitches) with usage filtering applied to comp_pitches."""
     target_pitches = (
         pitch_type_summ[
             (pitch_type_summ['player_name'] == target_pitcher) &
@@ -113,8 +66,6 @@ def suggest_pitches(
         .copy()
         .reset_index(drop=True)
     )
-
-    # Comp pitches: merge on (player_name, game_year) to get each comp's best year
     comp_year_keys = target_dists[['comp_pitcher', 'comp_year']].rename(
         columns={'comp_pitcher': 'player_name', 'comp_year': 'game_year'}
     )
@@ -124,8 +75,6 @@ def suggest_pitches(
         .dropna(subset=pitch_features)
         .copy()
     )
-
-    # ── Steps 4–7: unchanged from original ───────────────────────────────────
     totals = comp_pitches.groupby('player_name')['n'].sum().rename('total_n')
     comp_pitches = comp_pitches.merge(totals, on='player_name')
     comp_pitches['usage_pct'] = comp_pitches['n'] / comp_pitches['total_n']
@@ -133,46 +82,80 @@ def suggest_pitches(
         (comp_pitches['usage_pct'] >= min_comp_usage_pct) &
         (comp_pitches['n'] >= min_pitches)
     ]
+    return target_pitches, comp_pitches
 
-    if comp_pitches.empty:
-        return {
-            'status':         'no_comp_pitches',
-            'target_info':    target_row,
-            'comps':          target_dists,
-            'comp_pitches':   pd.DataFrame(),
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': target_pitches,
-        }
 
-    all_pitches  = pd.concat([target_pitches, comp_pitches], ignore_index=True)
-    scaler       = StandardScaler().fit(all_pitches[pitch_features])
-    X_target     = scaler.transform(target_pitches[pitch_features].values)
-    X_comp       = scaler.transform(comp_pitches[pitch_features].values)
+def _tag_novelty(target_pitches, comp_pitches, pitch_features, novelty_distance_threshold):
+    """
+    Fits a scaler on combined pitches, tags each comp pitch with its minimum distance to
+    any target pitch, and returns (scaler, comp_pitches_with_dist_cols, novel_subset).
+    """
+    all_pitches = pd.concat([target_pitches, comp_pitches], ignore_index=True)
+    scaler      = StandardScaler().fit(all_pitches[pitch_features])
+    X_target    = scaler.transform(target_pitches[pitch_features].values)
+    X_comp      = scaler.transform(comp_pitches[pitch_features].values)
 
-    dist_matrix  = cdist(X_comp, X_target, metric='euclidean')
-    closest_idx  = dist_matrix.argmin(axis=1)
+    dist_matrix = cdist(X_comp, X_target, metric='euclidean')
+    closest_idx = dist_matrix.argmin(axis=1)
 
     comp_pitches = comp_pitches.copy().reset_index(drop=True)
     comp_pitches['min_dist_to_target']   = dist_matrix.min(axis=1)
     comp_pitches['closest_target_pitch'] = target_pitches['pitch_type'].iloc[closest_idx].values
 
-    novel = comp_pitches[
-        comp_pitches['min_dist_to_target'] >= novelty_distance_threshold
-    ].copy()
+    novel = comp_pitches[comp_pitches['min_dist_to_target'] >= novelty_distance_threshold].copy()
+    return scaler, comp_pitches, novel
 
-    if len(novel) < 4:
-        return {
-            'status':         'no_novel_pitches',
-            'target_info':    target_row,
-            'comps':          target_dists,
-            'comp_pitches':   novel,
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': target_pitches,
-        }
 
-    X_novel = scaler.transform(novel[pitch_features].values)
+def _trim_cluster_outliers(novel, X_novel, mad_multiplier=3):
+    """
+    Removes points more than mad_multiplier*MAD from their cluster centroid.
+    Writes _dist_to_centroid, _cluster_median_dist, _cluster_mad, _outlier_threshold
+    onto novel (surviving rows only) so the caller can inspect and tune mad_multiplier.
+    Returns (novel, X_novel, trimmed_any).
+    """
+    novel       = novel.copy()
+    keep_mask   = np.ones(len(novel), dtype=bool)
+    trimmed_any = False
 
-    # ── Cluster novel pitches, trimming centroid outliers, then re-cluster ────
+    dist_to_centroid   = np.empty(len(novel))
+    cluster_median     = np.empty(len(novel))
+    cluster_mad_vals   = np.empty(len(novel))
+    outlier_thresholds = np.empty(len(novel))
+
+    for cid in novel['cluster'].unique():
+        mask     = novel['cluster'].values == cid
+        X_clust  = X_novel[mask]
+        centroid = X_clust.mean(axis=0)
+        dists    = np.linalg.norm(X_clust - centroid, axis=1)
+        median_d = np.median(dists)
+        mad      = np.median(np.abs(dists - median_d))
+        threshold = np.max([median_d + mad_multiplier * mad, 1])
+        outliers = dists > threshold
+        if outliers.any():
+            trimmed_any = True
+            keep_mask[np.where(mask)[0][outliers]] = False
+        dist_to_centroid[mask]   = dists
+        cluster_median[mask]     = median_d
+        cluster_mad_vals[mask]   = mad
+        outlier_thresholds[mask] = threshold
+
+    novel['_dist_to_centroid']   = dist_to_centroid
+    novel['_cluster_median_dist'] = cluster_median
+    novel['_cluster_mad']         = cluster_mad_vals
+    novel['_outlier_threshold']   = outlier_thresholds
+
+    novel   = novel[keep_mask].copy()
+    X_novel = X_novel[keep_mask]
+    return novel, X_novel, trimmed_any
+
+
+def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3):
+    """
+    Iteratively clusters novel pitches (best silhouette k), drops low-cohesion clusters,
+    and trims centroid outliers until stable. Returns novel with cluster and _sil columns.
+    mad_multiplier controls the outlier threshold passed to _trim_cluster_outliers.
+    """
+    X_novel    = scaler.transform(novel[pitch_features].values)
     MAX_ITERATIONS = 5
     for _ in range(MAX_ITERATIONS):
         best_k, best_score, best_labels = 1, -1, np.zeros(len(novel), dtype=int)
@@ -185,52 +168,22 @@ def suggest_pitches(
         novel = novel.copy().reset_index(drop=True)
         novel['cluster'] = best_labels
 
-        # ── Drop low-cohesion clusters ────────────────────────────────────────
         if best_k > 1:
-            sample_scores = silhouette_samples(X_novel, best_labels)
-            novel['_sil'] = sample_scores
-            cluster_mean_sil = novel.groupby('cluster')['_sil'].mean()
-            MIN_CLUSTER_SIL = 0
-            keep_clusters = cluster_mean_sil[cluster_mean_sil >= MIN_CLUSTER_SIL].index
-            novel = novel[novel['cluster'].isin(keep_clusters)].copy()
+            sample_scores    = silhouette_samples(X_novel, best_labels)
+            novel['_sil']    = sample_scores
+            #cluster_mean_sil = novel.groupby('cluster')['_sil'].mean()
+            #keep_clusters    = cluster_mean_sil[cluster_mean_sil >= 0].index
+           # novel = novel[novel['cluster'].isin(keep_clusters)].copy()
         else:
             novel['_sil'] = 0.0
 
-        # ── Trim centroid outliers within each cluster ────────────────────────
-        novel = novel.reset_index(drop=True)
+        novel   = novel.reset_index(drop=True)
         X_novel = scaler.transform(novel[pitch_features].values)
-        trimmed_any = False
-        keep_mask = np.ones(len(novel), dtype=bool)
-
-        for cid in novel['cluster'].unique():
-            mask = novel['cluster'].values == cid
-            X_clust = X_novel[mask]
-            centroid = X_clust.mean(axis=0)
-            dists = np.linalg.norm(X_clust - centroid, axis=1)
-            median_dist = np.median(dists)
-            mad = np.median(np.abs(dists - median_dist))
-            threshold = median_dist + 3 * mad
-            outlier_mask = dists > threshold
-            if outlier_mask.any():
-                trimmed_any = True
-                global_indices = np.where(mask)[0]
-                keep_mask[global_indices[outlier_mask]] = False
-
-        novel = novel[keep_mask].copy()
-        X_novel = scaler.transform(novel[pitch_features].values)
+        novel, X_novel, trimmed_any = _trim_cluster_outliers(novel, X_novel, mad_multiplier)
 
         if not trimmed_any:
             break
-
-    if novel.empty:
-        return {
-            'status':         'no_novel_pitches',
-            'target_info':    target_row,
-            'comps':          novel,
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': target_pitches,
-        }
-
+    
     cluster_labels = (
         novel.groupby('cluster')['pitch_type']
         .agg(lambda x: x.value_counts().index[0])
@@ -238,7 +191,13 @@ def suggest_pitches(
     )
     novel = novel.join(cluster_labels, on='cluster')
 
-    dist_lookup           = target_dists.set_index('comp_pitcher')['distance']
+    return novel
+
+
+def _build_suggestions(novel, target_dists):
+    """Aggregates clustered novel pitches into a suggestions DataFrame."""
+
+    dist_lookup              = target_dists.set_index('comp_pitcher')['distance']
     novel['biomech_distance'] = novel['player_name'].map(dist_lookup)
     novel['sim_weight']       = 1 / (novel['biomech_distance'] + 1e-6)
 
@@ -258,7 +217,7 @@ def suggest_pitches(
             'comp_pitchers':          ', '.join(sorted(grp['player_name'].unique())),
         })
 
-    suggestions = (
+    return (
         novel.groupby(['cluster_label', 'cluster'])
         .apply(summarise, include_groups=False)
         .reset_index()
@@ -266,6 +225,83 @@ def suggest_pitches(
         .reset_index(drop=True)
     )
 
+
+# Suggest pitches for a target pitcher based on biomechanical similarity to comps and novelty of pitch characteristics
+def suggest_pitches(
+    target_pitcher,
+    pitcher_summ,
+    pitch_type_summ,
+    biomech_distance_threshold=2.0,
+    novelty_distance_threshold=1.5,
+    min_comp_usage_pct=0.05,
+    min_pitches=20,
+    biomech_features=BIOMECH_FEATURES,
+    pitch_features=PITCH_CHAR_FEATURES,
+    **kwargs,  # forwarded to _cluster_novel
+):
+    target_row, target_year = _find_target(pitcher_summ, target_pitcher)
+    if target_row is None:
+        return {
+            'status':         'pitcher_not_found',
+            'target_info':    None,
+            'comps':          pd.DataFrame(),
+            'comp_pitches':   pd.DataFrame(),
+            'suggestions':    pd.DataFrame(),
+            'target_pitches': pd.DataFrame(),
+        }
+
+    target_dists = _find_biomech_comps(
+        pitcher_summ, target_pitcher, target_year,
+        biomech_features, biomech_distance_threshold, min_pitches,
+    )
+    if target_dists.empty:
+        return {
+            'status':         'no_comps',
+            'target_info':    target_row,
+            'comps':          target_dists,
+            'comp_pitches':   pd.DataFrame(),
+            'suggestions':    pd.DataFrame(),
+            'target_pitches': pd.DataFrame(),
+        }
+
+    target_pitches, comp_pitches = _collect_pitches(
+        pitch_type_summ, target_pitcher, target_year, target_dists,
+        pitch_features, min_comp_usage_pct, min_pitches,
+    )
+    if comp_pitches.empty:
+        return {
+            'status':         'no_comp_pitches',
+            'target_info':    target_row,
+            'comps':          target_dists,
+            'comp_pitches':   pd.DataFrame(),
+            'suggestions':    pd.DataFrame(),
+            'target_pitches': target_pitches,
+        }
+
+    scaler, comp_pitches, novel = _tag_novelty(
+        target_pitches, comp_pitches, pitch_features, novelty_distance_threshold,
+    )
+    if len(novel) < 4:
+        return {
+            'status':         'no_novel_pitches',
+            'target_info':    target_row,
+            'comps':          target_dists,
+            'comp_pitches':   novel,
+            'suggestions':    pd.DataFrame(),
+            'target_pitches': target_pitches,
+        }
+
+    novel = _cluster_novel(novel, scaler, pitch_features)
+    if novel.empty:
+        return {
+            'status':         'no_novel_pitches',
+            'target_info':    target_row,
+            'comps':          novel,
+            'suggestions':    pd.DataFrame(),
+            'target_pitches': target_pitches,
+        }
+
+    suggestions = _build_suggestions(novel, target_dists)
     return {
         'status':         'ok',
         'target_info':    target_row,
@@ -326,7 +362,7 @@ def plot_pitch_clusters(result):
     # ── Target pitches ────────────────────────────────────────────────────
     if target_pitches is not None and not target_pitches.empty:
         first = True
-        for pt, grp in target_pitches.groupby('pitch_type'):
+        for _, grp in target_pitches.groupby('pitch_type'):
             ax.scatter(
                 grp['pfx_x'], grp['pfx_z'],
                 label='Existing Pitch' if first else '_nolegend_',
@@ -350,7 +386,6 @@ def plot_pitch_clusters(result):
         mlines.Line2D([], [], color='black', marker='D', linestyle='None',
                       markersize=7, label='Existing Pitch')
     )
-    
 
     plt.colorbar(
         plt.cm.ScalarMappable(norm=norm, cmap=cmap),
