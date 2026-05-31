@@ -172,28 +172,55 @@ def suggest_pitches(
 
     X_novel = scaler.transform(novel[pitch_features].values)
 
-    #best_k, best_score, best_labels = 2, -1, None
-    best_k, best_score, best_labels = 1, -1, np.zeros(len(novel), dtype=int)
-    for k in range(2, min(9, len(novel))):
-        labels = KMeans(n_clusters=k, random_state=0, n_init='auto').fit_predict(X_novel)
-        score  = silhouette_score(X_novel, labels)
-        if score > best_score:
-            best_k, best_score, best_labels = k, score, labels
+    # ── Cluster novel pitches, trimming centroid outliers, then re-cluster ────
+    MAX_ITERATIONS = 5
+    for _ in range(MAX_ITERATIONS):
+        best_k, best_score, best_labels = 1, -1, np.zeros(len(novel), dtype=int)
+        for k in range(2, min(9, len(novel))):
+            labels = KMeans(n_clusters=k, random_state=0, n_init='auto').fit_predict(X_novel)
+            score  = silhouette_score(X_novel, labels)
+            if score > best_score:
+                best_k, best_score, best_labels = k, score, labels
 
-    novel = novel.copy().reset_index(drop=True)
-    novel['cluster'] = best_labels
+        novel = novel.copy().reset_index(drop=True)
+        novel['cluster'] = best_labels
 
-    # ── Drop low-cohesion clusters ────────────────────────────────────────────
-    # A cluster with a low mean silhouette score is a catch-all, not a coherent
-    # pitch family. Remove those rows entirely before building suggestions.
-    if best_k > 1:
-        sample_scores = silhouette_samples(X_novel, best_labels)
-        novel['_sil'] = sample_scores
-        cluster_mean_sil = novel.groupby('cluster')['_sil'].mean()
-        MIN_CLUSTER_SIL = 0#.4         
-        keep_clusters = cluster_mean_sil[cluster_mean_sil >= MIN_CLUSTER_SIL].index
-        novel = novel[novel['cluster'].isin(keep_clusters)].copy()
-        #novel = novel.drop(columns='_sil').reset_index(drop=True)
+        # ── Drop low-cohesion clusters ────────────────────────────────────────
+        if best_k > 1:
+            sample_scores = silhouette_samples(X_novel, best_labels)
+            novel['_sil'] = sample_scores
+            cluster_mean_sil = novel.groupby('cluster')['_sil'].mean()
+            MIN_CLUSTER_SIL = 0
+            keep_clusters = cluster_mean_sil[cluster_mean_sil >= MIN_CLUSTER_SIL].index
+            novel = novel[novel['cluster'].isin(keep_clusters)].copy()
+        else:
+            novel['_sil'] = 0.0
+
+        # ── Trim centroid outliers within each cluster ────────────────────────
+        novel = novel.reset_index(drop=True)
+        X_novel = scaler.transform(novel[pitch_features].values)
+        trimmed_any = False
+        keep_mask = np.ones(len(novel), dtype=bool)
+
+        for cid in novel['cluster'].unique():
+            mask = novel['cluster'].values == cid
+            X_clust = X_novel[mask]
+            centroid = X_clust.mean(axis=0)
+            dists = np.linalg.norm(X_clust - centroid, axis=1)
+            median_dist = np.median(dists)
+            mad = np.median(np.abs(dists - median_dist))
+            threshold = median_dist + 3 * mad
+            outlier_mask = dists > threshold
+            if outlier_mask.any():
+                trimmed_any = True
+                global_indices = np.where(mask)[0]
+                keep_mask[global_indices[outlier_mask]] = False
+
+        novel = novel[keep_mask].copy()
+        X_novel = scaler.transform(novel[pitch_features].values)
+
+        if not trimmed_any:
+            break
 
     if novel.empty:
         return {
@@ -232,7 +259,7 @@ def suggest_pitches(
         })
 
     suggestions = (
-        novel.groupby('cluster_label')
+        novel.groupby(['cluster_label', 'cluster'])
         .apply(summarise, include_groups=False)
         .reset_index()
         .sort_values('n_comps', ascending=False)
@@ -266,7 +293,7 @@ def plot_pitch_clusters(result):
     pitcher_name = result['target_pitches']['player_name'][0]
 
     markers = ['o', 's', '^', 'D', 'P', 'X', 'v', '<', '>', 'h']
-    clusters = sorted(comp_pitches['cluster_label'].unique())
+    cluster_keys = sorted(comp_pitches[['cluster_label', 'cluster']].drop_duplicates().itertuples(index=False, name=None))
 
     vmin = comp_pitches['release_speed'].min()
     vmax = comp_pitches['release_speed'].max()
@@ -276,20 +303,19 @@ def plot_pitch_clusters(result):
     fig, ax = plt.subplots(figsize=(8, 6))
 
     # ── Comp pitches: color = velocity, shape = cluster ───────────────────
-    for i, label in enumerate(clusters):
-        grp    = comp_pitches[comp_pitches['cluster_label'] == label]
+    for i, (label, cid) in enumerate(cluster_keys):
+        grp    = comp_pitches[(comp_pitches['cluster_label'] == label) & (comp_pitches['cluster'] == cid)]
         marker = markers[i % len(markers)]
         sc = ax.scatter(
             grp['pfx_x'], grp['pfx_z'],
             c=grp['release_speed'], cmap=cmap, norm=norm,
             marker=marker, s=60, alpha=0.7, zorder=2,
-            #label=label,
         )
 
     # ── Cluster centroids ─────────────────────────────────────────────────
-    centroids = comp_pitches.groupby('cluster_label')[['pfx_x', 'pfx_z', 'release_speed']].mean()
-    for i, (label, row) in enumerate(centroids.iterrows()):
-        marker = markers[clusters.index(label) % len(markers)]
+    centroids = comp_pitches.groupby(['cluster_label', 'cluster'])[['pfx_x', 'pfx_z', 'release_speed']].mean()
+    for i, ((label, cid), row) in enumerate(centroids.iterrows()):
+        marker = markers[i % len(markers)]
         ax.scatter(
             row['pfx_x'], row['pfx_z'],
             c=[[cmap(norm(row['release_speed']))]],
@@ -310,10 +336,10 @@ def plot_pitch_clusters(result):
 
     # ── Legend ────────────────────────────────────────────────────────────
     legend_handles = []
-    for i, label in enumerate(clusters):
+    for i, (label, cid) in enumerate(cluster_keys):
         legend_handles.append(
             mlines.Line2D([], [], color='grey', marker=markers[i % len(markers)],
-                          linestyle='None', markersize=7, label=label)
+                        linestyle='None', markersize=7, label=label)
         )
     legend_handles.append(
         mlines.Line2D([], [], color='grey', marker='o', linestyle='None',
