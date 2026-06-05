@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import requests
-from pybaseball import statcast
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -48,6 +47,7 @@ def load_statcast_live(start_dt='2025-01-01', end_dt='2025-12-31'):
     Returns:
         Raw statcast DataFrame
     """
+    from pybaseball import statcast  # imported lazily; only needed for live pulls
     df = statcast(start_dt=start_dt, end_dt=end_dt)
     df = df[df['game_type'] == 'R']
     return df

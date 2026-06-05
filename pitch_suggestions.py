@@ -167,6 +167,7 @@ def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3, mask=True, *
                 best_k, best_score, best_labels = k, score, labels
 
         novel['cluster'] = best_labels
+        novel['_sil']    = silhouette_samples(X_novel, best_labels)
         novel   = novel.reset_index(drop=True)
         X_novel = scaler.transform(novel[pitch_features].values)
         novel, X_novel, trimmed_any = _trim_cluster_outliers(novel, X_novel, mask=mask, mad_multiplier=mad_multiplier)
