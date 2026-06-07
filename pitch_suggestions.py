@@ -7,7 +7,6 @@ from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
-from sklearn.metrics import silhouette_samples
 
 
 # Constants
@@ -47,7 +46,7 @@ def _find_biomech_comps(pitcher_summ, target_pitcher, target_year,
     dists['comp_year']    = np.where(is_left, dists['game_year2'],   dists['game_year1'])
     return (
         dists[['comp_pitcher', 'comp_year', 'distance']]
-        .query('distance <= @biomech_distance_threshold')
+        .query('distance <= @biomech_distance_threshold and comp_pitcher != @target_pitcher')
         .sort_values('distance')
         .drop_duplicates(subset='comp_pitcher', keep='first')
         .reset_index(drop=True)
@@ -162,12 +161,10 @@ def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3, mask=True, *
         for k in range(2, min(9, len(novel))):
             labels = KMeans(n_clusters=k, random_state=0, n_init='auto').fit_predict(X_novel)
             score  = silhouette_score(X_novel, labels)
-            print(f"Silhouette score for k={k}: {score:.3f}")
             if score > best_score:
                 best_k, best_score, best_labels = k, score, labels
 
         novel['cluster'] = best_labels
-        novel['_sil']    = silhouette_samples(X_novel, best_labels)
         novel   = novel.reset_index(drop=True)
         X_novel = scaler.transform(novel[pitch_features].values)
         novel, X_novel, trimmed_any = _trim_cluster_outliers(novel, X_novel, mask=mask, mad_multiplier=mad_multiplier)
@@ -203,7 +200,6 @@ def _build_suggestions(novel, target_dists):
             'wavg_release_speed':     round((grp['release_speed'] * grp['sim_weight']).sum() / total_sim, 1),
             'wavg_pfx_x':             round((grp['pfx_x'] * grp['sim_weight']).sum() / total_sim, 2),
             'wavg_pfx_z':             round((grp['pfx_z'] * grp['sim_weight']).sum() / total_sim, 2),
-            '_sil':                   round(grp['_sil'].mean(), 3),
             'pitch_types_in_cluster': ', '.join(sorted(grp['pitch_type'].unique())),
             'comp_pitchers':          ', '.join(sorted(grp['player_name'].unique())),
         })

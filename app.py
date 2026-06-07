@@ -1,4 +1,4 @@
-import sys
+import sys, os
 sys.path.insert(0, '/Users/kids/Pitcher Similarity')
 
 import streamlit as st
@@ -8,8 +8,10 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import pandas as pd
 
-from data import build_all
 from pitch_suggestions import suggest_pitches
+
+SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snapshots')
+SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']
 
 st.set_page_config(page_title="Pitch Suggestions", layout="wide")
 
@@ -22,7 +24,12 @@ st.markdown("""
 
 @st.cache_data(show_spinner=False)
 def load_data():
-    return build_all(live=False)
+    """Prefer the prebuilt Parquet snapshot; fall back to building from CSVs."""
+    if all(os.path.exists(os.path.join(SNAPSHOT_DIR, f'{k}.parquet')) for k in SNAPSHOT_KEYS):
+        return {k: pd.read_parquet(os.path.join(SNAPSHOT_DIR, f'{k}.parquet')) for k in SNAPSHOT_KEYS}
+    from data import build_all  # heavy path: only imported if the snapshot is missing
+    data = build_all(live=False)
+    return {k: data[k] for k in SNAPSHOT_KEYS}
 
 
 @st.cache_data(show_spinner=False)
