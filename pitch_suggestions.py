@@ -13,6 +13,29 @@ import matplotlib.lines as mlines
 BIOMECH_FEATURES    = ['release_extension', 'arm_angle', 'max_velo', 'active_spin_fastball']
 PITCH_CHAR_FEATURES = ['release_speed', 'pfx_x', 'pfx_z']
 
+PITCH_FULL_NAMES = {
+    'FF': 'Four-Seam Fastball',
+    'SI': 'Sinker',
+    'FC': 'Cutter',
+    'SL': 'Slider',
+    'ST': 'Sweeper',
+    'CU': 'Curveball',
+    'CH': 'Changeup',
+    'KC': 'Knuckle Curve',
+    'CS': 'Slow Curve',
+    'FS': 'Splitter',
+    'FA': 'Fastball',
+    'SV': 'Slurve',
+    'FO': 'Other',
+    'KN': 'Knuckleball',
+    'EP': 'Eephus',
+    'SC': 'Screwball',
+    'PO': 'Pitch Out',
+}
+
+def _full_name(abbrev):
+    return PITCH_FULL_NAMES.get(abbrev, abbrev)
+
 
 def _find_target(pitcher_summ, target_pitcher):
     """Returns (target_row, target_year) or (None, None) if pitcher not found."""
@@ -200,17 +223,19 @@ def _build_suggestions(novel, target_dists):
             'wavg_release_speed':     round((grp['release_speed'] * grp['sim_weight']).sum() / total_sim, 1),
             'wavg_pfx_x':             round((grp['pfx_x'] * grp['sim_weight']).sum() / total_sim, 2),
             'wavg_pfx_z':             round((grp['pfx_z'] * grp['sim_weight']).sum() / total_sim, 2),
-            'pitch_types_in_cluster': ', '.join(sorted(grp['pitch_type'].unique())),
+            'pitch_types_in_cluster': ', '.join(_full_name(p) for p in sorted(grp['pitch_type'].unique())),
             'comp_pitchers':          ', '.join(sorted(grp['player_name'].unique())),
         })
 
-    return (
+    result = (
         novel.groupby(['cluster_label', 'cluster'])
         .apply(summarise, include_groups=False)
         .reset_index()
         .sort_values('n_comps', ascending=False)
         .reset_index(drop=True)
     )
+    result['cluster_label'] = result['cluster_label'].apply(lambda x: _full_name(x) + '*')
+    return result
 
 
 # Suggest pitches for a target pitcher based on biomechanical similarity to comps and novelty of pitch characteristics
@@ -353,12 +378,17 @@ def plot_pitch_clusters(result):
     # ── Target pitches ────────────────────────────────────────────────────
     if target_pitches is not None and not target_pitches.empty:
         first = True
-        for _, grp in target_pitches.groupby('pitch_type'):
+        for pitch_type, grp in target_pitches.groupby('pitch_type'):
             ax.scatter(
                 grp['pfx_x'], grp['pfx_z'],
                 label='Existing Pitch' if first else '_nolegend_',
                 color='black', s=80, zorder=3, marker='D',
             )
+            for _, row in grp.iterrows():
+                ax.annotate(
+                    _full_name(pitch_type), (row['pfx_x'], row['pfx_z']),
+                    textcoords='offset points', xytext=(5, 5), fontsize=7,
+                )
             first = False
 
     # ── Legend ────────────────────────────────────────────────────────────
@@ -366,7 +396,7 @@ def plot_pitch_clusters(result):
     for i, (label, cid) in enumerate(cluster_keys):
         legend_handles.append(
             mlines.Line2D([], [], color='grey', marker=markers[i % len(markers)],
-                        linestyle='None', markersize=7, label=label)
+                        linestyle='None', markersize=7, label=_full_name(label))
         )
     legend_handles.append(
         mlines.Line2D([], [], color='grey', marker='o', linestyle='None',
@@ -380,13 +410,15 @@ def plot_pitch_clusters(result):
 
     plt.colorbar(
         plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-        ax=ax, label='Release speed (mph)',
+        ax=ax, label='Velocity (mph)',
     )
     ax.axhline(0, color='grey', linewidth=0.5, linestyle='--')
     ax.axvline(0, color='grey', linewidth=0.5, linestyle='--')
+    ax.set_xlim(-2, 2)
+    ax.set_ylim(-2, 2)
     ax.set_xlabel('Horizontal Break (ft)')
     ax.set_ylabel('Induced Vertical Break (ft)')
-    ax.set_title(f'Pitch Recommendations — {pitcher_name}')
+    ax.set_title(f'Potential Pitch Plot — {pitcher_name}')
     ax.legend(handles=legend_handles, bbox_to_anchor=(1.25, 1), loc='upper left', fontsize=9)
     plt.tight_layout()
     plt.show()

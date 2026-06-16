@@ -7,11 +7,12 @@ import requests
 STATCAST_PATHS = {
     'statcast_25':  '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2025_statcast.csv',
     'statcast_2124': '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2021-24_statcast_update.csv',
+    'statcast_26': '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2026_statcast.csv',
 }
 
 SPIN_DIR = '/Users/kids/Pitcher Similarity/Spin Files/'
 
-SPIN_YEARS = [2021, 2022, 2023, 2024, 2025]
+SPIN_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
 PITCH_TYPE_COLUMNS = [
     'pitch_type', 'pitcher', 'player_name', 'release_speed', 'release_pos_x',
@@ -26,17 +27,18 @@ def load_statcast_local(paths=None):
     Load Statcast data from local CSVs and concatenate into one DataFrame.
 
     Parameters:
-        paths : dict with keys 'statcast_25' and 'statcast_2124', or None to use defaults
+        paths : dict with keys 'statcast_25', 'statcast_2124', and 'statcast_26', or None to use defaults
     Returns:
         Raw combined statcast DataFrame
     """
     paths = paths or STATCAST_PATHS
     statcast_25   = pd.read_csv(paths['statcast_25'])
     statcast_2124 = pd.read_csv(paths['statcast_2124'])
-    return pd.concat([statcast_2124, statcast_25], ignore_index=True)
+    statcast_26   = pd.read_csv(paths['statcast_26'])
+    return pd.concat([statcast_2124, statcast_25, statcast_26], ignore_index=True)
 
 
-def load_statcast_live(start_dt='2025-01-01', end_dt='2025-12-31'):
+def load_statcast_live(start_dt='2025-01-01', end_dt='2026-06-14'):
     """
     Pull Statcast data live using pybaseball and save to the default CSV paths.
     Filters to regular season games only.
@@ -53,7 +55,7 @@ def load_statcast_live(start_dt='2025-01-01', end_dt='2025-12-31'):
     return df
 
 
-def load_statcast(live=False, paths=None, start_dt='2025-01-01', end_dt='2025-12-31'):
+def load_statcast(live=False, paths=None, start_dt='2025-01-01', end_dt='2026-06-14'):
     """
     Entry point for loading Statcast data.
 

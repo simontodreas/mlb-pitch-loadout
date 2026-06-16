@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
 
-from pitch_suggestions import suggest_pitches
+from pitch_suggestions import suggest_pitches, _full_name, BIOMECH_FEATURES
 
 SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snapshots')
 SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']
@@ -46,8 +46,35 @@ def run_suggest(pitcher_name, is_righty, biomech_thr, novelty_thr, min_usage, mi
     )
 
 
+def _label_position(x, z, limit=2.1, margin=0.6):
+    """Pick textposition that keeps labels inside the plot boundary."""
+    if x > limit - margin:
+        return 'top left'
+    if z > limit - margin:
+        return 'bottom right'
+    return 'top right'
+
+
+def _wrap_label(name):
+    """Insert <br> near the midpoint of names longer than 10 chars."""
+    if len(name) <= 10:
+        return name
+    mid = len(name) // 2
+    left  = name.rfind(' ', 0, mid)
+    right = name.find(' ', mid)
+    if left == -1 and right == -1:
+        return name
+    if left == -1:
+        split = right
+    elif right == -1:
+        split = left
+    else:
+        split = left if (mid - left) <= (right - mid) else right
+    return name[:split] + '<br>' + name[split + 1:]
+
+
 def make_cluster_fig(result, is_righty):
-    comp_pitches   = result['comp_pitches']
+    comp_pitches   = result['comp_pitches'].reset_index(drop=True)
     target_pitches = result['target_pitches']
     pitcher_name   = target_pitches['player_name'].iloc[0]
 
@@ -72,7 +99,7 @@ def make_cluster_fig(result, is_righty):
             x=grp['pfx_x'],
             y=grp['pfx_z'],
             mode='markers',
-            name=f'Possible Pitch ({label})',
+            name=f'Possible Pitch ({_full_name(label)})',
             marker=dict(
                 symbol=plotly_markers[i % len(plotly_markers)],
                 size=8,
@@ -83,13 +110,17 @@ def make_cluster_fig(result, is_righty):
                 opacity=0.7,
                 showscale=(i == 0),
                 colorbar=dict(
-                    title=dict(text='Release Speed (mph)', side='right'),
+                    title=dict(text='Velocity (mph)', side='right'),
                     x=1.02,
                     thickness=15,
                     len=0.75,
                 ) if i == 0 else None,
             ),
-            customdata=grp[['player_name', 'pitch_type']].values,
+            customdata=np.column_stack([
+                grp['player_name'].values,
+                grp['pitch_type'].map(_full_name).values,
+                grp.index.values,                       # stable row id → maps to table rows
+            ]),
             hovertemplate=(
                 '<b>%{customdata[0]}</b><br>'
                 'Pitch: %{customdata[1]}'
@@ -119,7 +150,7 @@ def make_cluster_fig(result, is_righty):
                 showscale=False,
             ),
             hovertemplate=(
-                f'<b>Centroid: {label}</b><br>'
+                f'<b>Centroid: {_full_name(label)}</b><br>'
                 'HBreak: %{x:.2f} ft<br>'
                 'IVBreak: %{y:.2f} ft'
                 '<extra></extra>'
@@ -133,10 +164,10 @@ def make_cluster_fig(result, is_righty):
             mode='markers+text',
             name='Existing Pitch',
             marker=dict(symbol='diamond', size=16, color='black'),
-            text=target_pitches['pitch_type'],
-            textposition='top right',
+            text=[_wrap_label(_full_name(pt)) for pt in target_pitches['pitch_type']],
+            textposition=[_label_position(x, z) for x, z in zip(target_pitches['pfx_x'], target_pitches['pfx_z'])],
             textfont=dict(size=14, color='black'),
-            customdata=target_pitches[['player_name', 'pitch_type']].values,
+            customdata=np.column_stack([target_pitches['player_name'].values, target_pitches['pitch_type'].map(_full_name).values]),
             hovertemplate=(
                 '<b>%{customdata[0]}</b><br>'
                 'Pitch: %{customdata[1]}'
@@ -164,19 +195,19 @@ def make_cluster_fig(result, is_righty):
         hovertemplate=f'Arm Angle: {arm_angle_deg:.1f}°<extra></extra>',
     ))
 
-    axis_range = [-2.5, 2.5]
+    axis_range = [-2.1, 2.1]
     grid_style = dict(
         showgrid=True, gridcolor='lightgrey', gridwidth=1,
         zeroline=True, zerolinecolor='darkgrey', zerolinewidth=1.5,
         range=axis_range, constrain='domain',
     )
     fig.update_layout(
-        title=dict(text=f'Potential Arsenal — {pitcher_name}', x=0.5, xanchor='center'),
+        title=dict(text=f'Potential Arsenal — {pitcher_name}<br><sup>Batter View</sup>', x=0.5, xanchor='center'),
         xaxis_title='Horizontal Break (ft)',
         yaxis_title='Induced Vertical Break (ft)',
         xaxis=grid_style,
         yaxis=dict(**grid_style, scaleanchor='x', scaleratio=1),
-        dragmode=False,
+        dragmode='select',
         legend=dict(x=1.22, y=1, xanchor='left'),
         height=560,
         margin=dict(r=200),
@@ -195,19 +226,11 @@ pitchers_r = set(pitcher_summ_r[pitcher_summ_r['game_year'] == 2025]['player_nam
 pitchers_l = set(pitcher_summ_l[pitcher_summ_l['game_year'] == 2025]['player_name'].unique())
 all_pitchers = sorted(pitchers_r | pitchers_l)
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-st.sidebar.title("Pitch Suggestions")
+# ── Pitcher selector (top of page) ───────────────────────────────────────────
+st.title("Pitch Suggestions")
+selected = st.selectbox("Select Pitcher", all_pitchers, placeholder="Search for a pitcher…")
 
-search = st.sidebar.text_input("Search pitcher", placeholder="e.g. Bello")
-filtered = [p for p in all_pitchers if search.lower() in p.lower()] if search else all_pitchers
-
-if not filtered:
-    st.sidebar.warning("No pitchers match that search.")
-    st.stop()
-
-selected = st.sidebar.selectbox("Select pitcher", filtered)
-
-st.sidebar.markdown("---")
+# ── Sidebar parameters ────────────────────────────────────────────────────────
 st.sidebar.subheader("Parameters")
 
 biomech_thr  = st.sidebar.slider("Biomech Distance Threshold",  0.5, 3.0, 1.5, 0.1,
@@ -224,8 +247,6 @@ is_righty = selected in pitchers_r
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 throws = "RHP" if is_righty else "LHP"
-st.title(f"Pitch Suggestions — {selected}")
-st.caption(f"{throws}")
 
 with st.spinner("Running analysis..."):
     result = run_suggest(selected, is_righty, biomech_thr, novelty_thr, min_usage, min_pitches)
@@ -247,75 +268,199 @@ if status != 'ok':
             st.dataframe(result['comps'], use_container_width=True)
     st.stop()
 
-# ── Target info metrics ───────────────────────────────────────────────────────
+# ── Bio panel | Pitch Plot ────────────────────────────────────────────────────
 info = result['target_info']
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Arm Angle",  f"{info['arm_angle']:.1f}°")
-c2.metric("Extension",  f"{info['release_extension']:.2f} ft")
-c3.metric("Max Velo",   f"{info['max_velo']:.1f} mph")
-c4.metric("Primary FB", info.get('pri_fb', 'N/A'))
-c5.metric("Comps Found", len(result['comps']))
+bio_col, plot_col = st.columns([1, 2])
 
-st.markdown("---")
+with bio_col:
+    st.subheader("Pitcher Profile")
+    st.metric("Season",        int(info['game_year']))
+    st.metric("Throws",        throws)
+    st.metric("Arm Angle",     f"{info['arm_angle']:.1f}°")
+    st.metric("Extension",     f"{info['release_extension']:.2f} ft")
+    st.metric("Max Velocity",  f"{info['max_velo']:.1f} mph")
+    st.metric("Primary FB",    info.get('pri_fb', 'N/A'))
+    st.metric("Active Spin",   f"{info['active_spin_fastball']:.1f}%")
+    st.metric("Total Pitches", f"{int(info['n']):,}")
+    st.metric("Comps Found",   len(result['comps']))
 
-# ── Current arsenal ───────────────────────────────────────────────────────────
-left_col, right_col = st.columns([1, 1.6])
+with plot_col:
+    st.subheader("Potential Pitch Plot")
+    st.caption("Click, box-, or lasso-select pitches to highlight them in the tables below.")
+    fig = make_cluster_fig(result, is_righty)
+    plot_event = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode=("points", "box", "lasso"),
+        key=f"pitch_plot_{selected}",
+        config={'scrollZoom': False, 'displayModeBar': True,
+                'modeBarButtonsToRemove': ['zoom2d', 'pan2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d']},
+    )
 
-with left_col:
+    # ── Arsenal & Suggestions ─────────────────────────────────────────────────
     st.subheader("Arsenal & Suggestions")
 
     target = result['target_pitches'].copy()
     total_n = target['n'].sum()
 
     current_rows = pd.DataFrame({
-        'Pitch':                  target['pitch_type'].values,
-        'Usage':                  (target['n'] / total_n).values,
-        'Velocity':               target['release_speed'].values,
-        'Horizontal Break':       target['pfx_x'].values,
-        'Induced Vertical Break': target['pfx_z'].values,
-        '# Comps':                np.nan,
+        'Pitch':                       target['pitch_type'].map(_full_name).values,
+        'Current Usage':               (target['n'] / total_n).values,
+        'MPH':                         target['release_speed'].values,
+        'Horizontal Break (ft)':       target['pfx_x'].values,
+        'Induced Vertical Break (ft)': target['pfx_z'].values,
+        '# Comps':                     np.nan,
     })
 
     sugg = result['suggestions']
     sugg_rows = pd.DataFrame({
-        'Pitch':                  sugg['cluster_label'].values,
-        'Usage':                  np.nan,
-        'Velocity':               sugg['wavg_release_speed'].values,
-        'Horizontal Break':       sugg['wavg_pfx_x'].values,
-        'Induced Vertical Break': sugg['wavg_pfx_z'].values,
-        '# Comps':                sugg['n_comps'].values.astype(float),
+        'Pitch':                       sugg['cluster_label'].values,
+        'Current Usage':               np.nan,
+        'MPH':                         sugg['wavg_release_speed'].values,
+        'Horizontal Break (ft)':       sugg['wavg_pfx_x'].values,
+        'Induced Vertical Break (ft)': sugg['wavg_pfx_z'].values,
+        '# Comps':                     sugg['n_comps'].values.astype(float),
     })
 
-    combined = pd.concat([current_rows, sugg_rows], ignore_index=True)
+    current_rows['_is_sugg'] = False
+    sugg_rows['_is_sugg']    = True
+    combined = (
+        pd.concat([current_rows, sugg_rows], ignore_index=True)
+        .sort_values(['Current Usage', '# Comps'], ascending=[False, False], na_position='last')
+        .reset_index(drop=True)
+    )
+    sugg_mask = combined['_is_sugg'].tolist()
+    combined = combined.drop(columns='_is_sugg')
+
+    def _style_suggestions(df):
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
+        pitch_col = df.columns.get_loc('Pitch')
+        for i, is_sugg in enumerate(sugg_mask):
+            if is_sugg:
+                styles.iloc[i, pitch_col] = 'font-style: italic'
+        return styles
 
     st.dataframe(
-        combined.style.format({
-            'Usage':                  '{:.1%}',
-            'Velocity':               '{:.1f}',
-            'Horizontal Break':       '{:.2f}',
-            'Induced Vertical Break': '{:.2f}',
-            '# Comps':                '{:.0f}',
-        }, na_rep=''),
+        combined.style
+            .format({
+                'Current Usage':               '{:.1%}',
+                'MPH':                         '{:.1f}',
+                'Horizontal Break (ft)':       '{:.2f}',
+                'Induced Vertical Break (ft)': '{:.2f}',
+                '# Comps':                     '{:.0f}',
+            }, na_rep='')
+            .apply(_style_suggestions, axis=None),
         use_container_width=True,
         hide_index=True,
     )
 
-with right_col:
-    st.subheader("Cluster Plot")
-    fig = make_cluster_fig(result, is_righty)
-    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
-
 st.markdown("---")
 
-# ── Detail tables ─────────────────────────────────────────────────────────────
-with st.expander("Comp Pitchers"):
-    st.dataframe(result['comps'], use_container_width=True, hide_index=True)
+# ── Plot selection → table highlighting ───────────────────────────────────────
+# Comp pitch traces carry customdata [player_name, pitch_full_name, row_id]; centroid/
+# arm-angle/target traces don't, so filter to points that have all three fields.
+selected_row_ids = []
+for _pt in (plot_event.get("selection", {}).get("points", []) if plot_event else []):
+    _cd = _pt.get("customdata")
+    if _cd and len(_cd) >= 3:
+        selected_row_ids.append(int(_cd[2]))
 
-with st.expander("Novel Comp Pitches"):
-    cp = result['comp_pitches'].copy()
-    display_cols = ['player_name', 'game_year', 'pitch_type', 'release_speed',
-                    'pfx_x', 'pfx_z', 'usage_pct', 'min_dist_to_target',
-                    'closest_target_pitch', 'cluster_label', 'biomech_distance']
-    display_cols = [c for c in display_cols if c in cp.columns]
-    st.dataframe(cp[display_cols], use_container_width=True, hide_index=True)
+_comp_pitches_indexed = result['comp_pitches'].reset_index(drop=True)
+selected_pitchers = set(_comp_pitches_indexed.loc[selected_row_ids, 'player_name']) if selected_row_ids else set()
+
+SELECT_HL = 'background-color: #fff2a8'  # highlight for plot-selected rows
+
+# ── Detail tables ─────────────────────────────────────────────────────────────
+st.subheader("Comp Pitchers")
+pitcher_summ = data['pitcher_summ_r'] if is_righty else data['pitcher_summ_l']
+comps_display = (
+    result['comps']
+    .merge(
+        pitcher_summ[['player_name', 'game_year'] + BIOMECH_FEATURES],
+        left_on=['comp_pitcher', 'comp_year'],
+        right_on=['player_name', 'game_year'],
+        how='left',
+    )
+    .drop(columns=['player_name', 'game_year'])
+    .rename(columns={
+        'comp_pitcher':         'Pitcher',
+        'comp_year':            'Year',
+        'distance':             'Biomech Distance',
+        'release_extension':    'Extension (ft)',
+        'arm_angle':            'Arm Angle (°)',
+        'max_velo':             'Max Velo (mph)',
+        'active_spin_fastball': 'Fastball Active Spin (%)',
+    })
+)
+
+# Raise plot-selected pitchers to the top (just under the pinned target row).
+if selected_pitchers:
+    _sel = comps_display['Pitcher'].isin(selected_pitchers)
+    comps_display = pd.concat([comps_display[_sel], comps_display[~_sel]]).reset_index(drop=True)
+
+_ti = result['target_info']
+target_row_df = pd.DataFrame([{
+    'Pitcher':                  _ti['player_name'],
+    'Year':                     int(_ti['game_year']),
+    'Biomech Distance':         np.nan,
+    'Extension (ft)':           _ti['release_extension'],
+    'Arm Angle (°)':            _ti['arm_angle'],
+    'Max Velo (mph)':           _ti['max_velo'],
+    'Fastball Active Spin (%)': _ti['active_spin_fastball'],
+}])
+comps_display = pd.concat([target_row_df, comps_display], ignore_index=True)
+
+def _style_comps(df):
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    styles.iloc[0] = 'font-weight: bold; background-color: #dbe8ff'  # pinned target row
+    for i in range(1, len(df)):
+        if df.iloc[i]['Pitcher'] in selected_pitchers:
+            styles.iloc[i] = SELECT_HL
+    return styles
+
+st.dataframe(
+    comps_display.style
+        .format({
+            'Year':                     '{:.0f}',
+            'Biomech Distance':         '{:.3f}',
+            'Extension (ft)':           '{:.1f}',
+            'Arm Angle (°)':            '{:.0f}',
+            'Max Velo (mph)':           '{:.1f}',
+            'Fastball Active Spin (%)': '{:.1f}',
+        }, na_rep='')
+        .apply(_style_comps, axis=None),
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.subheader("Novel Comp Pitches")
+cp = result['comp_pitches'].reset_index(drop=True)
+display_cols = ['player_name', 'game_year', 'pitch_type', 'release_speed',
+                'pfx_x', 'pfx_z', 'usage_pct', 'min_dist_to_target',
+                'closest_target_pitch', 'cluster_label', 'biomech_distance']
+display_cols = [c for c in display_cols if c in cp.columns]
+cp = cp[display_cols]
+
+# Raise the exact plot-selected pitch rows to the top (row ids align with cp's index).
+if selected_row_ids:
+    _sel_idx = [i for i in selected_row_ids if i in cp.index]
+    _rest    = [i for i in cp.index if i not in selected_row_ids]
+    cp = cp.loc[_sel_idx + _rest]
+    _novel_sel_mask = [i in selected_row_ids for i in cp.index]
+else:
+    _novel_sel_mask = [False] * len(cp)
+
+def _style_novel(df):
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    for i, on in enumerate(_novel_sel_mask):
+        if on:
+            styles.iloc[i] = SELECT_HL
+    return styles
+
+st.dataframe(
+    cp.style.apply(_style_novel, axis=None),
+    use_container_width=True,
+    hide_index=True,
+)
 
