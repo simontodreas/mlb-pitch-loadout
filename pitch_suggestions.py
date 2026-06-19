@@ -38,10 +38,21 @@ def _full_name(abbrev):
 
 
 def _find_target(pitcher_summ, target_pitcher):
-    """Returns (target_row, target_year) or (None, None) if pitcher not found."""
+    """Returns (target_row, target_year) or (None, None) if pitcher not found.
+
+    Raises ValueError if the name maps to more than one `pitcher` id — `pitcher`,
+    not `player_name`, is the true identity key, so an ambiguous name must be
+    resolved before any suggestion is made.
+    """
     rows = pitcher_summ[pitcher_summ['player_name'] == target_pitcher]
     if rows.empty:
         return None, None
+    ids = rows['pitcher'].unique()
+    if len(ids) > 1:
+        raise ValueError(
+            f"'{target_pitcher}' matches {len(ids)} pitchers (pitcher ids: {sorted(ids)}). "
+            f"Filter pitcher_summ to the intended 'pitcher' id before calling suggest_pitches."
+        )
     year = rows['game_year'].max()
     row  = rows.loc[rows['game_year'].idxmax()]
     return row, year
@@ -422,56 +433,3 @@ def plot_pitch_clusters(result):
     ax.legend(handles=legend_handles, bbox_to_anchor=(1.25, 1), loc='upper left', fontsize=9)
     plt.tight_layout()
     plt.show()
-
-
-def run_suggest_pitches_bulk(
-    pitcher_summ,              # R or L
-    pitch_type_summ,
-    min_pitches=20,
-    **kwargs,                  # forwarded to suggest_pitches
-):
-    """
-    Run suggest_pitches for every qualifying pitcher and return:
-        suggestions_df : flat DataFrame of all suggestions, with target_pitcher column
-        diagnostics_df : one row per pitcher with status and basic counts
-    """
-    # build pool from that
-    pool = pitcher_summ[(pitcher_summ['n'] >= min_pitches) & (pitcher_summ['game_year'] == 2025)]
-
-    all_suggestions = []
-    diag_rows       = []
-
-    for name in pool['player_name']:
-        try:
-            result = suggest_pitches(
-                name, pitcher_summ, pitch_type_summ,
-                min_pitches=min_pitches, **kwargs
-            )
-            status    = result['status']
-            n_comps   = len(result['comps'])
-            n_suggest = len(result['suggestions'])
-
-            if status == 'ok' and n_suggest > 0:
-                sdf = result['suggestions'].copy()
-                sdf.insert(0, 'target_pitcher', name)
-                all_suggestions.append(sdf)
-
-        except Exception as e:
-            status    = f'exception: {e}'
-            n_comps   = 0
-            n_suggest = 0
-
-        diag_rows.append({
-            'target_pitcher': name,
-            'status':         status,
-            'n_comps':        n_comps,
-            'n_suggestions':  n_suggest,
-        })
-
-    suggestions_df = (
-        pd.concat(all_suggestions, ignore_index=True)
-        if all_suggestions else pd.DataFrame()
-    )
-    diagnostics_df = pd.DataFrame(diag_rows)
-
-    return suggestions_df, diagnostics_df

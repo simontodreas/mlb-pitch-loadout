@@ -101,7 +101,10 @@ def clean_statcast(statcast_raw):
     Returns:
         Cleaned statcast DataFrame
     """
-    return statcast_raw[statcast_raw['release_speed'] >= 70].copy()
+    return statcast_raw[
+        (statcast_raw['release_speed'] >= 70) &
+        (statcast_raw['pitch_type'] != 'PO')
+    ].copy()
 
 
 def build_pitch_type_summ(statcast_clean):
