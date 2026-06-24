@@ -31,12 +31,12 @@ def load_data():
 
 
 @st.cache_data(show_spinner=False)
-def run_suggest(pitcher_name, is_righty, biomech_thr, novelty_thr, min_usage, min_pitches):
+def run_suggest(pitcher_id, is_righty, biomech_thr, novelty_thr, min_usage, min_pitches):
     data = load_data()
     pitcher_summ   = data['pitcher_summ_r']  if is_righty else data['pitcher_summ_l']
     pitch_type_summ = data['pitch_type_r']   if is_righty else data['pitch_type_l']
     return suggest_pitches(
-        target_pitcher=pitcher_name,
+        target_pitcher_id=pitcher_id,
         pitcher_summ=pitcher_summ,
         pitch_type_summ=pitch_type_summ,
         biomech_distance_threshold=biomech_thr,
@@ -222,13 +222,24 @@ with st.spinner("Loading data..."):
 pitcher_summ_r = data['pitcher_summ_r']
 pitcher_summ_l = data['pitcher_summ_l']
 
-pitchers_r = set(pitcher_summ_r[pitcher_summ_r['game_year'] == 2025]['player_name'].unique())
-pitchers_l = set(pitcher_summ_l[pitcher_summ_l['game_year'] == 2025]['player_name'].unique())
-all_pitchers = sorted(pitchers_r | pitchers_l)
+# Search is by name, but identity is the `pitcher` id. Build label -> (id, is_righty)
+# options from the 2025 pool, disambiguating duplicate names by id.
+_pool = pd.concat([
+    pitcher_summ_r[pitcher_summ_r['game_year'] == 2025][['pitcher', 'player_name']].assign(is_righty=True),
+    pitcher_summ_l[pitcher_summ_l['game_year'] == 2025][['pitcher', 'player_name']].assign(is_righty=False),
+], ignore_index=True).drop_duplicates(subset='pitcher')
+_name_counts = _pool['player_name'].value_counts()
+pitcher_options = {
+    (row['player_name'] if _name_counts[row['player_name']] == 1 else f"{row['player_name']} (id {row['pitcher']})"):
+        (int(row['pitcher']), bool(row['is_righty']))
+    for _, row in _pool.iterrows()
+}
+all_pitchers = sorted(pitcher_options)
 
 # ── Pitcher selector (top of page) ───────────────────────────────────────────
 st.title("Pitch Suggestions")
 selected = st.selectbox("Select Pitcher", all_pitchers, placeholder="Search for a pitcher…")
+selected_id, is_righty = pitcher_options[selected]
 
 # ── Sidebar parameters ────────────────────────────────────────────────────────
 st.sidebar.subheader("Parameters")
@@ -242,14 +253,11 @@ min_usage    = st.sidebar.slider("Min Comp Usage %",            0.01, 0.10, 0.01
 min_pitches  = st.sidebar.slider("Min Pitches",                 10, 50, 20, 5,
                                   help="Minimum pitch count to include a pitcher")
 
-# ── Handedness ────────────────────────────────────────────────────────────────
-is_righty = selected in pitchers_r
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 throws = "RHP" if is_righty else "LHP"
 
 with st.spinner("Running analysis..."):
-    result = run_suggest(selected, is_righty, biomech_thr, novelty_thr, min_usage, min_pitches)
+    result = run_suggest(selected_id, is_righty, biomech_thr, novelty_thr, min_usage, min_pitches)
 
 status = result['status']
 
@@ -374,17 +382,17 @@ SELECT_HL = 'background-color: #fff2a8'  # highlight for plot-selected rows
 # ── Detail tables ─────────────────────────────────────────────────────────────
 st.subheader("Comp Pitchers")
 pitcher_summ = data['pitcher_summ_r'] if is_righty else data['pitcher_summ_l']
+# comp_pitcher is a pitcher id; join on it to recover the display name + biomech features.
 comps_display = (
     result['comps']
     .merge(
-        pitcher_summ[['player_name', 'game_year'] + BIOMECH_FEATURES],
+        pitcher_summ[['pitcher', 'game_year', 'player_name'] + BIOMECH_FEATURES],
         left_on=['comp_pitcher', 'comp_year'],
-        right_on=['player_name', 'game_year'],
+        right_on=['pitcher', 'game_year'],
         how='left',
     )
-    .drop(columns=['player_name', 'game_year'])
     .rename(columns={
-        'comp_pitcher':         'Pitcher',
+        'player_name':          'Pitcher',
         'comp_year':            'Year',
         'distance':             'Biomech Distance',
         'release_extension':    'Extension (ft)',
@@ -392,6 +400,8 @@ comps_display = (
         'max_velo':             'Max Velo (mph)',
         'active_spin_fastball': 'Fastball Active Spin (%)',
     })
+    [['Pitcher', 'Year', 'Biomech Distance', 'Extension (ft)', 'Arm Angle (°)',
+      'Max Velo (mph)', 'Fastball Active Spin (%)']]
 )
 
 # Raise plot-selected pitchers to the top (just under the pinned target row).

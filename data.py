@@ -248,7 +248,7 @@ def build_pitch_type_views(pitch_type_summ):
     Returns:
         pitch_type_r, pitch_type_l DataFrames
     """
-    cols = ['player_name', 'game_year', 'pitch_type', 'release_speed', 'pfx_x', 'pfx_z', 'n']
+    cols = ['pitcher', 'player_name', 'game_year', 'pitch_type', 'release_speed', 'pfx_x', 'pfx_z', 'n']
     pitch_type_r = pitch_type_summ[pitch_type_summ['p_throws'] == 'R'][cols].copy()
     pitch_type_l = pitch_type_summ[pitch_type_summ['p_throws'] == 'L'][cols].copy()
     return pitch_type_r, pitch_type_l

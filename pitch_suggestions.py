@@ -37,79 +37,72 @@ def _full_name(abbrev):
     return PITCH_FULL_NAMES.get(abbrev, abbrev)
 
 
-def _find_target(pitcher_summ, target_pitcher):
-    """Returns (target_row, target_year) or (None, None) if pitcher not found.
+def _find_target(pitcher_summ, target_pitcher_id):
+    """Returns (target_row, target_year) or (None, None) if the pitcher id is not found.
 
-    Raises ValueError if the name maps to more than one `pitcher` id — `pitcher`,
-    not `player_name`, is the true identity key, so an ambiguous name must be
-    resolved before any suggestion is made.
+    Identity is the unique `pitcher` id (not `player_name`), so the most recent
+    season for that id anchors the suggestion.
     """
-    rows = pitcher_summ[pitcher_summ['player_name'] == target_pitcher]
+    rows = pitcher_summ[pitcher_summ['pitcher'] == target_pitcher_id]
     if rows.empty:
         return None, None
-    ids = rows['pitcher'].unique()
-    if len(ids) > 1:
-        raise ValueError(
-            f"'{target_pitcher}' matches {len(ids)} pitchers (pitcher ids: {sorted(ids)}). "
-            f"Filter pitcher_summ to the intended 'pitcher' id before calling suggest_pitches."
-        )
-    year = rows['game_year'].max()
-    row  = rows.loc[rows['game_year'].idxmax()]
-    return row, year
+    row = rows.loc[rows['game_year'].idxmax()]
+    return row, row['game_year']
 
 
-def _find_biomech_comps(pitcher_summ, target_pitcher, target_year,
+def _find_biomech_comps(pitcher_summ, target_pitcher_id, target_year,
                         biomech_features, biomech_distance_threshold, min_pitches):
     """
     Returns a DataFrame (comp_pitcher, comp_year, distance) of biomechanically
-    similar pitchers, deduplicated to the closest year per comp.
+    similar pitchers (`comp_pitcher` is a `pitcher` id), deduplicated to the
+    closest year per comp.
     """
     biomech_dist = compute_euclidean_distances(
         pitcher_summ,
         features=biomech_features,
-        label_cols=['player_name', 'game_year'],
+        label_cols=['pitcher', 'game_year'],
         min_pitches=min_pitches,
     )
     target_mask = (
-        ((biomech_dist['player_name1'] == target_pitcher) & (biomech_dist['game_year1'] == target_year)) |
-        ((biomech_dist['player_name2'] == target_pitcher) & (biomech_dist['game_year2'] == target_year))
+        ((biomech_dist['pitcher1'] == target_pitcher_id) & (biomech_dist['game_year1'] == target_year)) |
+        ((biomech_dist['pitcher2'] == target_pitcher_id) & (biomech_dist['game_year2'] == target_year))
     )
     dists   = biomech_dist[target_mask].copy()
-    is_left = dists['player_name1'] == target_pitcher
-    dists['comp_pitcher'] = np.where(is_left, dists['player_name2'], dists['player_name1'])
-    dists['comp_year']    = np.where(is_left, dists['game_year2'],   dists['game_year1'])
+    is_left = dists['pitcher1'] == target_pitcher_id
+    dists['comp_pitcher'] = np.where(is_left, dists['pitcher2'], dists['pitcher1'])
+    dists['comp_year']    = np.where(is_left, dists['game_year2'], dists['game_year1'])
     return (
         dists[['comp_pitcher', 'comp_year', 'distance']]
-        .query('distance <= @biomech_distance_threshold and comp_pitcher != @target_pitcher')
+        .query('distance <= @biomech_distance_threshold and comp_pitcher != @target_pitcher_id')
         .sort_values('distance')
         .drop_duplicates(subset='comp_pitcher', keep='first')
         .reset_index(drop=True)
     )
 
 
-def _collect_pitches(pitch_type_summ, target_pitcher, target_year, target_dists,
+def _collect_pitches(pitch_type_summ, target_pitcher_id, target_year, target_dists,
                      pitch_features, min_comp_usage_pct, min_pitches):
     """Returns (target_pitches, comp_pitches) with usage filtering applied to comp_pitches."""
     target_pitches = (
         pitch_type_summ[
-            (pitch_type_summ['player_name'] == target_pitcher) &
-            (pitch_type_summ['game_year']   == target_year)
+            (pitch_type_summ['pitcher']   == target_pitcher_id) &
+            (pitch_type_summ['game_year'] == target_year)
         ]
         .dropna(subset=pitch_features)
         .copy()
         .reset_index(drop=True)
     )
     comp_year_keys = target_dists[['comp_pitcher', 'comp_year']].rename(
-        columns={'comp_pitcher': 'player_name', 'comp_year': 'game_year'}
+        columns={'comp_pitcher': 'pitcher', 'comp_year': 'game_year'}
     )
     comp_pitches = (
         pitch_type_summ
-        .merge(comp_year_keys, on=['player_name', 'game_year'], how='inner')
+        .merge(comp_year_keys, on=['pitcher', 'game_year'], how='inner')
         .dropna(subset=pitch_features)
         .copy()
     )
-    totals = comp_pitches.groupby('player_name')['n'].sum().rename('total_n')
-    comp_pitches = comp_pitches.merge(totals, on='player_name')
+    totals = comp_pitches.groupby('pitcher')['n'].sum().rename('total_n')
+    comp_pitches = comp_pitches.merge(totals, on='pitcher')
     comp_pitches['usage_pct'] = comp_pitches['n'] / comp_pitches['total_n']
     comp_pitches = comp_pitches[
         (comp_pitches['usage_pct'] >= min_comp_usage_pct) &
@@ -220,13 +213,13 @@ def _build_suggestions(novel, target_dists):
     """Aggregates clustered novel pitches into a suggestions DataFrame."""
 
     dist_lookup              = target_dists.set_index('comp_pitcher')['distance']
-    novel['biomech_distance'] = novel['player_name'].map(dist_lookup)
+    novel['biomech_distance'] = novel['pitcher'].map(dist_lookup)
     novel['sim_weight']       = 1 / (novel['biomech_distance'] + 1e-6)
 
     def summarise(grp):
         total_sim = grp['sim_weight'].sum()
         return pd.Series({
-            'n_comps':                len(grp['player_name'].unique()),
+            'n_comps':                grp['pitcher'].nunique(),
             'avg_release_speed':      round(grp['release_speed'].mean(), 1),
             'avg_pfx_x':              round(grp['pfx_x'].mean(), 2),
             'avg_pfx_z':              round(grp['pfx_z'].mean(), 2),
@@ -251,7 +244,7 @@ def _build_suggestions(novel, target_dists):
 
 # Suggest pitches for a target pitcher based on biomechanical similarity to comps and novelty of pitch characteristics
 def suggest_pitches(
-    target_pitcher,
+    target_pitcher_id,
     pitcher_summ,
     pitch_type_summ,
     biomech_distance_threshold=2.0,
@@ -262,7 +255,8 @@ def suggest_pitches(
     pitch_features=PITCH_CHAR_FEATURES,
     **kwargs,  # forwarded to _cluster_novel
 ):
-    target_row, target_year = _find_target(pitcher_summ, target_pitcher)
+    """`target_pitcher_id` is the `pitcher` id (not the player name)."""
+    target_row, target_year = _find_target(pitcher_summ, target_pitcher_id)
     if target_row is None:
         return {
             'status':         'pitcher_not_found',
@@ -274,7 +268,7 @@ def suggest_pitches(
         }
 
     target_dists = _find_biomech_comps(
-        pitcher_summ, target_pitcher, target_year,
+        pitcher_summ, target_pitcher_id, target_year,
         biomech_features, biomech_distance_threshold, min_pitches,
     )
     if target_dists.empty:
@@ -288,7 +282,7 @@ def suggest_pitches(
         }
 
     target_pitches, comp_pitches = _collect_pitches(
-        pitch_type_summ, target_pitcher, target_year, target_dists,
+        pitch_type_summ, target_pitcher_id, target_year, target_dists,
         pitch_features, min_comp_usage_pct, min_pitches,
     )
     if comp_pitches.empty:
