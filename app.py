@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
 
-from pitch_suggestions import suggest_pitches, _full_name, BIOMECH_FEATURES
+from pitch_suggestions import suggest_pitches, _full_name, BIOMECH_FEATURES, hb_in, vb_in
 
 SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snapshots')
 SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']
@@ -46,7 +46,7 @@ def run_suggest(pitcher_id, is_righty, biomech_thr, novelty_thr, min_usage, min_
     )
 
 
-def _label_position(x, z, limit=2.1, margin=0.6):
+def _label_position(x, z, limit=25.2, margin=7.2):
     """Pick textposition that keeps labels inside the plot boundary."""
     if x > limit - margin:
         return 'top left'
@@ -96,8 +96,8 @@ def make_cluster_fig(result, is_righty):
     for i, (label, cid) in enumerate(cluster_keys):
         grp = comp_pitches[(comp_pitches['cluster_label'] == label) & (comp_pitches['cluster'] == cid)]
         fig.add_trace(go.Scatter(
-            x=grp['pfx_x'],
-            y=grp['pfx_z'],
+            x=hb_in(grp['pfx_x']),
+            y=vb_in(grp['pfx_z']),
             mode='markers',
             name=f'Possible Pitch ({_full_name(label)})',
             marker=dict(
@@ -133,8 +133,8 @@ def make_cluster_fig(result, is_righty):
         idx = cluster_key_index.get((row['cluster_label'], row['cluster']), 0)
         label = row['cluster_label']
         fig.add_trace(go.Scatter(
-            x=[row['pfx_x']],
-            y=[row['pfx_z']],
+            x=[hb_in(row['pfx_x'])],
+            y=[vb_in(row['pfx_z'])],
             mode='markers',
             name='Cluster Centroid',
             showlegend=(idx == 0),
@@ -151,21 +151,21 @@ def make_cluster_fig(result, is_righty):
             ),
             hovertemplate=(
                 f'<b>Centroid: {_full_name(label)}</b><br>'
-                'HBreak: %{x:.2f} ft<br>'
-                'IVBreak: %{y:.2f} ft'
+                'HBreak: %{x:.1f} in<br>'
+                'IVBreak: %{y:.1f} in'
                 '<extra></extra>'
             ),
         ))
 
     if target_pitches is not None and not target_pitches.empty:
         fig.add_trace(go.Scatter(
-            x=target_pitches['pfx_x'],
-            y=target_pitches['pfx_z'],
+            x=hb_in(target_pitches['pfx_x']),
+            y=vb_in(target_pitches['pfx_z']),
             mode='markers+text',
             name='Existing Pitch',
             marker=dict(symbol='diamond', size=16, color='black'),
             text=[_wrap_label(_full_name(pt)) for pt in target_pitches['pitch_type']],
-            textposition=[_label_position(x, z) for x, z in zip(target_pitches['pfx_x'], target_pitches['pfx_z'])],
+            textposition=[_label_position(x, z) for x, z in zip(hb_in(target_pitches['pfx_x']), vb_in(target_pitches['pfx_z']))],
             textfont=dict(size=14, color='black'),
             customdata=np.column_stack([target_pitches['player_name'].values, target_pitches['pitch_type'].map(_full_name).values]),
             hovertemplate=(
@@ -178,8 +178,10 @@ def make_cluster_fig(result, is_righty):
     # ── Arm angle (drawn on the main plot, pivoting at the origin) ─────────────
     ARM_LEN = 1.5
     arm_dir = -1 if is_righty else 1  # mirror righties so the arm enters from the correct side
-    ax_x = arm_dir * ARM_LEN * np.cos(arm_angle_rad)
-    ax_y = ARM_LEN * np.sin(arm_angle_rad)
+    # Transform the arm endpoint with the same break helpers so it tracks the
+    # flipped (pitcher's-perspective), inches-scaled pitch coordinates.
+    ax_x = hb_in(arm_dir * ARM_LEN * np.cos(arm_angle_rad))
+    ax_y = vb_in(ARM_LEN * np.sin(arm_angle_rad))
 
     fig.add_trace(go.Scatter(
         x=[0, ax_x], y=[0, ax_y], mode='lines',
@@ -195,16 +197,16 @@ def make_cluster_fig(result, is_righty):
         hovertemplate=f'Arm Angle: {arm_angle_deg:.1f}°<extra></extra>',
     ))
 
-    axis_range = [-2.1, 2.1]
+    axis_range = [-25.2, 25.2]
     grid_style = dict(
         showgrid=True, gridcolor='lightgrey', gridwidth=1,
         zeroline=True, zerolinecolor='darkgrey', zerolinewidth=1.5,
         range=axis_range, constrain='domain',
     )
     fig.update_layout(
-        title=dict(text=f'Potential Arsenal — {pitcher_name}<br><sup>Batter View</sup>', x=0.5, xanchor='center'),
-        xaxis_title='Horizontal Break (ft)',
-        yaxis_title='Induced Vertical Break (ft)',
+        title=dict(text=f'Potential Arsenal — {pitcher_name}<br><sup>Pitcher View</sup>', x=0.5, xanchor='center'),
+        xaxis_title='Horizontal Break (in)',
+        yaxis_title='Induced Vertical Break (in)',
         xaxis=grid_style,
         yaxis=dict(**grid_style, scaleanchor='x', scaleratio=1),
         dragmode='select',
@@ -316,8 +318,8 @@ with plot_col:
         'Pitch':                       target['pitch_type'].map(_full_name).values,
         'Current Usage':               (target['n'] / total_n).values,
         'MPH':                         target['release_speed'].values,
-        'Horizontal Break (ft)':       target['pfx_x'].values,
-        'Induced Vertical Break (ft)': target['pfx_z'].values,
+        'Horizontal Break (in)':       hb_in(target['pfx_x'].values),
+        'Induced Vertical Break (in)': vb_in(target['pfx_z'].values),
         '# Comps':                     np.nan,
     })
 
@@ -326,8 +328,8 @@ with plot_col:
         'Pitch':                       sugg['cluster_label'].values,
         'Current Usage':               np.nan,
         'MPH':                         sugg['wavg_release_speed'].values,
-        'Horizontal Break (ft)':       sugg['wavg_pfx_x'].values,
-        'Induced Vertical Break (ft)': sugg['wavg_pfx_z'].values,
+        'Horizontal Break (in)':       hb_in(sugg['wavg_pfx_x'].values),
+        'Induced Vertical Break (in)': vb_in(sugg['wavg_pfx_z'].values),
         '# Comps':                     sugg['n_comps'].values.astype(float),
     })
 
@@ -354,8 +356,8 @@ with plot_col:
             .format({
                 'Current Usage':               '{:.1%}',
                 'MPH':                         '{:.1f}',
-                'Horizontal Break (ft)':       '{:.2f}',
-                'Induced Vertical Break (ft)': '{:.2f}',
+                'Horizontal Break (in)':       '{:.1f}',
+                'Induced Vertical Break (in)': '{:.1f}',
                 '# Comps':                     '{:.0f}',
             }, na_rep='')
             .apply(_style_suggestions, axis=None),

@@ -13,6 +13,20 @@ import matplotlib.lines as mlines
 BIOMECH_FEATURES    = ['release_extension', 'arm_angle', 'max_velo', 'active_spin_fastball']
 PITCH_CHAR_FEATURES = ['release_speed', 'pfx_x', 'pfx_z']
 
+# Pitch-break display helpers. Statcast pfx_x/pfx_z are in feet from the catcher's
+# (batter's) perspective. Pitch plots show break in inches from the pitcher's
+# perspective, so horizontal break is scaled to inches and sign-flipped, while
+# vertical break is only scaled to inches.
+FT_TO_IN = 12.0
+
+def hb_in(pfx_x):
+    """Horizontal break in inches, from the pitcher's perspective."""
+    return -pfx_x * FT_TO_IN
+
+def vb_in(pfx_z):
+    """Induced vertical break in inches."""
+    return pfx_z * FT_TO_IN
+
 PITCH_FULL_NAMES = {
     'FF': 'Four-Seam Fastball',
     'SI': 'Sinker',
@@ -364,7 +378,7 @@ def plot_pitch_clusters(result):
         grp    = comp_pitches[(comp_pitches['cluster_label'] == label) & (comp_pitches['cluster'] == cid)]
         marker = markers[i % len(markers)]
         sc = ax.scatter(
-            grp['pfx_x'], grp['pfx_z'],
+            hb_in(grp['pfx_x']), vb_in(grp['pfx_z']),
             c=grp['release_speed'], cmap=cmap, norm=norm,
             marker=marker, s=60, alpha=0.7, zorder=2,
         )
@@ -374,7 +388,7 @@ def plot_pitch_clusters(result):
     for i, ((label, cid), row) in enumerate(centroids.iterrows()):
         marker = markers[i % len(markers)]
         ax.scatter(
-            row['pfx_x'], row['pfx_z'],
+            hb_in(row['pfx_x']), vb_in(row['pfx_z']),
             c=[[cmap(norm(row['release_speed']))]],
             marker=marker, s=250, zorder=4,
             edgecolors='black', linewidths=1.5,
@@ -385,13 +399,13 @@ def plot_pitch_clusters(result):
         first = True
         for pitch_type, grp in target_pitches.groupby('pitch_type'):
             ax.scatter(
-                grp['pfx_x'], grp['pfx_z'],
+                hb_in(grp['pfx_x']), vb_in(grp['pfx_z']),
                 label='Existing Pitch' if first else '_nolegend_',
                 color='black', s=80, zorder=3, marker='D',
             )
             for _, row in grp.iterrows():
                 ax.annotate(
-                    _full_name(pitch_type), (row['pfx_x'], row['pfx_z']),
+                    _full_name(pitch_type), (hb_in(row['pfx_x']), vb_in(row['pfx_z'])),
                     textcoords='offset points', xytext=(5, 5), fontsize=7,
                 )
             first = False
@@ -419,10 +433,10 @@ def plot_pitch_clusters(result):
     )
     ax.axhline(0, color='grey', linewidth=0.5, linestyle='--')
     ax.axvline(0, color='grey', linewidth=0.5, linestyle='--')
-    ax.set_xlim(-2, 2)
-    ax.set_ylim(-2, 2)
-    ax.set_xlabel('Horizontal Break (ft)')
-    ax.set_ylabel('Induced Vertical Break (ft)')
+    ax.set_xlim(-24, 24)
+    ax.set_ylim(-24, 24)
+    ax.set_xlabel('Horizontal Break (in)')
+    ax.set_ylabel('Induced Vertical Break (in)')
     ax.set_title(f'Potential Pitch Plot — {pitcher_name}')
     ax.legend(handles=legend_handles, bbox_to_anchor=(1.25, 1), loc='upper left', fontsize=9)
     plt.tight_layout()
