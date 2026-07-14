@@ -9,7 +9,11 @@ Python environment that has access to the raw Statcast/spin CSVs:
 After this, app.py loads the Parquet snapshot directly and no longer needs the
 raw CSVs (or pybaseball) at runtime.
 """
+import json
 import os
+
+import pandas as pd
+
 from data import build_all
 
 SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snapshots')
@@ -26,6 +30,12 @@ def build_snapshot(live=False):
         data[key].to_parquet(path, index=False)
         size_kb = os.path.getsize(path) / 1024
         print(f'  wrote {key:18s} {len(data[key]):>7,} rows  ({size_kb:,.1f} KB)')
+
+    # Record how current the data is, so the app can display it.
+    data_through = str(pd.to_datetime(data['statcast_clean']['game_date']).max().date())
+    with open(os.path.join(SNAPSHOT_DIR, 'meta.json'), 'w') as f:
+        json.dump({'data_through': data_through}, f)
+    print(f'  data through {data_through}')
     print(f'Snapshot written to {SNAPSHOT_DIR}')
 
 

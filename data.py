@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 import numpy as np
 import requests
@@ -10,9 +12,11 @@ STATCAST_PATHS = {
     'statcast_26': '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2026_statcast.csv',
 }
 
-SPIN_DIR = '/Users/kids/Pitcher Similarity/Spin Files/'
+SPIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Spin Files/')
 
 SPIN_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
+
+SPIN_CSV_URL = 'https://baseballsavant.mlb.com/leaderboard/active-spin?year={year}_spin-based&min=1&hand=&csv=true'
 
 PITCH_TYPE_COLUMNS = [
     'pitch_type', 'pitcher', 'player_name', 'release_speed', 'release_pos_x',
@@ -38,7 +42,7 @@ def load_statcast_local(paths=None):
     return pd.concat([statcast_2124, statcast_25, statcast_26], ignore_index=True)
 
 
-def load_statcast_live(start_dt='2025-01-01', end_dt='2026-06-14'):
+def load_statcast_live(start_dt='2025-01-01', end_dt='2026-12-31'):
     """
     Pull Statcast data live using pybaseball and save to the default CSV paths.
     Filters to regular season games only.
@@ -55,7 +59,7 @@ def load_statcast_live(start_dt='2025-01-01', end_dt='2026-06-14'):
     return df
 
 
-def load_statcast(live=False, paths=None, start_dt='2025-01-01', end_dt='2026-06-14'):
+def load_statcast(live=False, paths=None, start_dt='2025-01-01', end_dt='2026-12-31'):
     """
     Entry point for loading Statcast data.
 
@@ -70,6 +74,27 @@ def load_statcast(live=False, paths=None, start_dt='2025-01-01', end_dt='2026-06
     if live:
         return load_statcast_live(start_dt=start_dt, end_dt=end_dt)
     return load_statcast_local(paths=paths)
+
+
+def download_spin_files(years=None, spin_dir=None):
+    """
+    Download active-spin leaderboard CSVs from Baseball Savant into spin_dir,
+    replacing the manual export step. Existing files are overwritten.
+
+    Parameters:
+        years    : list of years to fetch (defaults to SPIN_YEARS)
+        spin_dir : destination folder (defaults to SPIN_DIR)
+    """
+    years    = years or SPIN_YEARS
+    spin_dir = spin_dir or SPIN_DIR
+    os.makedirs(spin_dir, exist_ok=True)
+    for year in years:
+        response = requests.get(SPIN_CSV_URL.format(year=year), timeout=60)
+        response.raise_for_status()
+        path = os.path.join(spin_dir, f'active-spin_{str(year)[-2:]}.csv')
+        with open(path, 'wb') as f:
+            f.write(response.content)
+        print(f'  downloaded active-spin_{str(year)[-2:]}.csv ({len(response.content):,} bytes)')
 
 
 def load_spin_data(spin_dir=None):

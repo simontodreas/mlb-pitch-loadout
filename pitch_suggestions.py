@@ -5,8 +5,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
-import matplotlib.pyplot as plt
-import matplotlib.lines as mlines
+import plotly.graph_objects as go
 
 
 # Constants
@@ -286,9 +285,9 @@ def suggest_pitches(
     target_pitcher_id,
     pitcher_summ,
     pitch_type_summ,
-    biomech_distance_threshold=2.0,
-    novelty_distance_threshold=1.5,
-    min_comp_usage_pct=0.05,
+    biomech_distance_threshold=1.5,
+    novelty_distance_threshold=1.2,
+    min_comp_usage_pct=0.01,
     min_pitches=20,
     biomech_features=BIOMECH_FEATURES,
     pitch_features=PITCH_CHAR_FEATURES,
@@ -373,97 +372,242 @@ def suggest_pitches(
     }
 
 
-def plot_pitch_clusters(result):
-    """
-    Scatter plot of comp pitches in pfx_x / pfx_z space.
-    Color encodes release_speed, marker shape encodes cluster.
-    Cluster centroids are overlaid as large markers.
-    Target pitches are overlaid in grey, labeled by pitch_type.
+def _label_position(x, z, limit=25.2, margin=7.2):
+    """Pick textposition that keeps labels inside the plot boundary."""
+    if x > limit - margin:
+        return 'top left'
+    if z > limit - margin:
+        return 'bottom right'
+    return 'top right'
 
-    Parameters
-    ----------
-    result         : dict returned by suggest_pitches (must include 'comp_pitches', 'target_pitches')
+
+def _wrap_label(name):
+    """Insert <br> near the midpoint of names longer than 10 chars."""
+    if len(name) <= 10:
+        return name
+    mid = len(name) // 2
+    left  = name.rfind(' ', 0, mid)
+    right = name.find(' ', mid)
+    if left == -1 and right == -1:
+        return name
+    if left == -1:
+        split = right
+    elif right == -1:
+        split = left
+    else:
+        split = left if (mid - left) <= (right - mid) else right
+    return name[:split] + '<br>' + name[split + 1:]
+
+
+def make_cluster_fig(result, is_righty, vmin=None, vmax=None, show_existing=True, show_suggested=True):
+    """The app's Pitcher-View break plot. Single source of truth: the Streamlit
+    app, plot_pitch_clusters, and the validation overlay all render through here.
+
+    vmin/vmax fix the velocity color band (the app passes a league-wide band so
+    colors compare across pitchers); left as None they span this result's pitches.
     """
-    comp_pitches   = result['comp_pitches']
+    comp_pitches = result.get('comp_pitches')
+    if comp_pitches is None or 'cluster_label' not in comp_pitches.columns:
+        # No-suggestion statuses (no novel pitches / too few to cluster) still
+        # render the plot — existing pitches only.
+        comp_pitches = pd.DataFrame({
+            'cluster_label': pd.Series(dtype=str),
+            'cluster':       pd.Series(dtype=int),
+            'pfx_x':         pd.Series(dtype=float),
+            'pfx_z':         pd.Series(dtype=float),
+            'release_speed': pd.Series(dtype=float),
+            'player_name':   pd.Series(dtype=str),
+            'pitch_type':    pd.Series(dtype=str),
+        })
+    else:
+        comp_pitches = comp_pitches.reset_index(drop=True)
+    if not show_suggested:
+        # Emptying the frame drops every comp/suggested trace (scatter + centroids)
+        # since they are all derived from it.
+        comp_pitches = comp_pitches.iloc[0:0]
     target_pitches = result['target_pitches']
+    pitcher_name   = target_pitches['player_name'].iloc[0]
 
-    pitcher_name = result['target_pitches']['player_name'][0]
+    if vmin is None or vmax is None:
+        speeds = pd.concat([comp_pitches['release_speed'], target_pitches['release_speed']])
+        vmin = float(speeds.min()) if vmin is None else vmin
+        vmax = float(speeds.max()) if vmax is None else vmax
 
-    markers = ['o', 's', '^', 'D', 'P', 'X', 'v', '<', '>', 'h']
-    cluster_keys = sorted(comp_pitches[['cluster_label', 'cluster']].drop_duplicates().itertuples(index=False, name=None))
+    plotly_markers = ['circle', 'square', 'triangle-up', 'diamond', 'cross',
+                      'x', 'triangle-down', 'triangle-left', 'triangle-right', 'hexagon']
+    cluster_keys = sorted(
+        comp_pitches[['cluster_label', 'cluster']].drop_duplicates().itertuples(index=False, name=None)
+    )
+    cluster_key_index = {(label, cid): idx for idx, (label, cid) in enumerate(cluster_keys)}
 
-    vmin = comp_pitches['release_speed'].min()
-    vmax = comp_pitches['release_speed'].max()
-    norm = plt.Normalize(vmin=vmin, vmax=vmax)
-    cmap = plt.cm.plasma
+    arm_angle_deg  = result['target_info']['arm_angle']
+    arm_angle_rad  = np.radians(arm_angle_deg)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig = go.Figure()
 
-    # ── Comp pitches: color = velocity, shape = cluster ───────────────────
     for i, (label, cid) in enumerate(cluster_keys):
-        grp    = comp_pitches[(comp_pitches['cluster_label'] == label) & (comp_pitches['cluster'] == cid)]
-        marker = markers[i % len(markers)]
-        sc = ax.scatter(
-            hb_in(grp['pfx_x']), vb_in(grp['pfx_z']),
-            c=grp['release_speed'], cmap=cmap, norm=norm,
-            marker=marker, s=60, alpha=0.7, zorder=2,
-        )
+        grp = comp_pitches[(comp_pitches['cluster_label'] == label) & (comp_pitches['cluster'] == cid)]
+        fig.add_trace(go.Scatter(
+            x=hb_in(grp['pfx_x']),
+            y=vb_in(grp['pfx_z']),
+            mode='markers',
+            name=f'Comparison Pitch ({_full_name(label)})',
+            marker=dict(
+                symbol=plotly_markers[i % len(plotly_markers)],
+                size=8,
+                color=grp['release_speed'],
+                colorscale='plasma',
+                cmin=vmin,
+                cmax=vmax,
+                opacity=0.7,
+                showscale=(i == 0),
+                colorbar=dict(
+                    title=dict(text='Velocity (mph)', side='right'),
+                    x=1.02,
+                    thickness=15,
+                    # almost the entire bottom half of the right column; the
+                    # legend keeps the space above it
+                    len=0.48,
+                    y=0,
+                    yanchor='bottom',
+                ) if i == 0 else None,
+            ),
+            customdata=np.column_stack([
+                grp['player_name'].values,
+                grp['pitch_type'].map(_full_name).values,
+                grp.index.values,                       # stable row id → maps to table rows
+            ]),
+            hovertemplate=(
+                '<b>%{customdata[0]}</b><br>'
+                'Pitch: %{customdata[1]}'
+                '<extra></extra>'
+            ),
+        ))
 
-    # ── Cluster centroids ─────────────────────────────────────────────────
-    centroids = comp_pitches.groupby(['cluster_label', 'cluster'])[['pfx_x', 'pfx_z', 'release_speed']].mean()
-    for i, ((label, cid), row) in enumerate(centroids.iterrows()):
-        marker = markers[i % len(markers)]
-        ax.scatter(
-            hb_in(row['pfx_x']), vb_in(row['pfx_z']),
-            c=[[cmap(norm(row['release_speed']))]],
-            marker=marker, s=250, zorder=4,
-            edgecolors='black', linewidths=1.5,
-        )
+    centroids = comp_pitches.groupby(['cluster_label', 'cluster'])[['pfx_x', 'pfx_z', 'release_speed']].mean().reset_index()
+    for _, row in centroids.iterrows():
+        idx = cluster_key_index.get((row['cluster_label'], row['cluster']), 0)
+        label = row['cluster_label']
+        cx, cy = hb_in(row['pfx_x']), vb_in(row['pfx_z'])
+        fig.add_trace(go.Scatter(
+            x=[cx],
+            y=[cy],
+            mode='markers+text',
+            name='Suggested Pitch',
+            showlegend=(idx == 0),
+            legendgroup='centroid',
+            text=[f'<i>{_wrap_label(_full_name(label))}</i>'],
+            textposition=[_label_position(cx, cy)],
+            textfont=dict(size=16, color='#555'),
+            marker=dict(
+                symbol=plotly_markers[idx % len(plotly_markers)],
+                size=16,
+                color=[row['release_speed']],
+                colorscale='plasma',
+                cmin=vmin,
+                cmax=vmax,
+                line=dict(color='black', width=2),
+                showscale=False,
+            ),
+            hovertemplate=(
+                f'<b>Suggested: {_full_name(label)}</b><br>'
+                'HBreak: %{x:.1f} in<br>'
+                'IVBreak: %{y:.1f} in'
+                '<extra></extra>'
+            ),
+        ))
 
-    # ── Target pitches ────────────────────────────────────────────────────
-    if target_pitches is not None and not target_pitches.empty:
-        first = True
-        for pitch_type, grp in target_pitches.groupby('pitch_type'):
-            ax.scatter(
-                hb_in(grp['pfx_x']), vb_in(grp['pfx_z']),
-                label='Existing Pitch' if first else '_nolegend_',
-                color='black', s=80, zorder=3, marker='D',
-            )
-            for _, row in grp.iterrows():
-                ax.annotate(
-                    _full_name(pitch_type), (hb_in(row['pfx_x']), vb_in(row['pfx_z'])),
-                    textcoords='offset points', xytext=(5, 5), fontsize=7,
-                )
-            first = False
+    # The first comp trace normally carries the colorbar; the existing-pitch
+    # trace takes it over when no comp traces are drawn.
+    existing_carries_scale = show_suggested is False or comp_pitches.empty
 
-    # ── Legend ────────────────────────────────────────────────────────────
-    legend_handles = []
-    for i, (label, cid) in enumerate(cluster_keys):
-        legend_handles.append(
-            mlines.Line2D([], [], color='grey', marker=markers[i % len(markers)],
-                        linestyle='None', markersize=7, label=_full_name(label))
-        )
-    legend_handles.append(
-        mlines.Line2D([], [], color='grey', marker='o', linestyle='None',
-                      markersize=12, markeredgecolor='black', markeredgewidth=1.5,
-                      label='Cluster Centroid')
+    if show_existing and target_pitches is not None and not target_pitches.empty:
+        fig.add_trace(go.Scatter(
+            x=hb_in(target_pitches['pfx_x']),
+            y=vb_in(target_pitches['pfx_z']),
+            mode='markers+text',
+            name='Existing Pitch',
+            marker=dict(
+                symbol='diamond',
+                size=18,
+                color=target_pitches['release_speed'],
+                colorscale='plasma',
+                cmin=vmin,
+                cmax=vmax,
+                line=dict(color='black', width=3),
+                showscale=existing_carries_scale,
+                colorbar=dict(
+                    title=dict(text='Velocity (mph)', side='right'),
+                    x=1.02,
+                    thickness=15,
+                    # almost the entire bottom half of the right column; the
+                    # legend keeps the space above it
+                    len=0.48,
+                    y=0,
+                    yanchor='bottom',
+                ) if existing_carries_scale else None,
+            ),
+            text=[f'<b>{_wrap_label(_full_name(pt))}</b>' for pt in target_pitches['pitch_type']],
+            textposition=[_label_position(x, z) for x, z in zip(hb_in(target_pitches['pfx_x']), vb_in(target_pitches['pfx_z']))],
+            textfont=dict(size=16, color='black'),
+            customdata=np.column_stack([target_pitches['player_name'].values, target_pitches['pitch_type'].map(_full_name).values]),
+            hovertemplate=(
+                '<b>%{customdata[0]}</b><br>'
+                'Pitch: %{customdata[1]}'
+                '<extra></extra>'
+            ),
+        ))
+
+    # ── Arm angle (drawn on the main plot, pivoting at the origin) ─────────────
+    ARM_LEN = 1.5
+    arm_dir = -1 if is_righty else 1  # mirror righties so the arm enters from the correct side
+    # Transform the arm endpoint with the same break helpers so it tracks the
+    # flipped (pitcher's-perspective), inches-scaled pitch coordinates.
+    ax_x = hb_in(arm_dir * ARM_LEN * np.cos(arm_angle_rad))
+    ax_y = vb_in(ARM_LEN * np.sin(arm_angle_rad))
+
+    fig.add_trace(go.Scatter(
+        x=[0, ax_x], y=[0, ax_y], mode='lines',
+        name='Arm Angle',
+        line=dict(color='rgba(50,50,50,0.30)', width=6),
+        hovertemplate=f'Arm Angle: {arm_angle_deg:.1f}°<extra></extra>',
+    ))
+    fig.add_trace(go.Scatter(
+        x=[ax_x], y=[ax_y], mode='markers',
+        showlegend=False, legendgroup='Arm Angle',
+        marker=dict(size=20, color='rgba(80,80,80,0.30)',
+                    line=dict(color='rgba(50,50,50,0.35)', width=2)),
+        hovertemplate=f'Arm Angle: {arm_angle_deg:.1f}°<extra></extra>',
+    ))
+
+    axis_range = [-25.2, 25.2]
+    grid_style = dict(
+        showgrid=True, gridcolor='lightgrey', gridwidth=1,
+        zeroline=True, zerolinecolor='darkgrey', zerolinewidth=1.5,
+        range=axis_range, constrain='domain',
     )
-    legend_handles.append(
-        mlines.Line2D([], [], color='black', marker='D', linestyle='None',
-                      markersize=7, label='Existing Pitch')
+    fig.update_layout(
+        title=dict(text=f'Potential Arsenal — {pitcher_name}<br><sup>Pitcher View</sup>', x=0.5, xanchor='center', font=dict(size=24)),
+        xaxis_title='Horizontal Break (in)',
+        yaxis_title='Induced Vertical Break (in)',
+        # constraintoward='right' packs the square plot against the legend
+        # instead of centering it with dead space on both sides.
+        xaxis=dict(**grid_style, constraintoward='right'),
+        yaxis=dict(**grid_style, scaleanchor='x', scaleratio=1),
+        dragmode='select',
+        legend=dict(x=1.02, y=1, xanchor='left', font=dict(size=16)),
+        height=640,
+        margin=dict(r=200),
     )
+    return fig
 
-    plt.colorbar(
-        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-        ax=ax, label='Velocity (mph)',
-    )
-    ax.axhline(0, color='grey', linewidth=0.5, linestyle='--')
-    ax.axvline(0, color='grey', linewidth=0.5, linestyle='--')
-    ax.set_xlim(-24, 24)
-    ax.set_ylim(-24, 24)
-    ax.set_xlabel('Horizontal Break (in)')
-    ax.set_ylabel('Induced Vertical Break (in)')
-    ax.set_title(f'Potential Pitch Plot — {pitcher_name}')
-    ax.legend(handles=legend_handles, bbox_to_anchor=(1.25, 1), loc='upper left', fontsize=9)
-    plt.tight_layout()
-    plt.show()
+
+def plot_pitch_clusters(result):
+    """The app's Pitcher-View break plot for a suggest_pitches result.
+
+    Thin wrapper over make_cluster_fig: handedness comes from the result and the
+    velocity color band spans this result's pitches (the app instead passes a
+    league-wide band). Returns the plotly figure.
+    """
+    is_righty = result['target_info'].get('p_throws', 'R') == 'R'
+    return make_cluster_fig(result, is_righty)

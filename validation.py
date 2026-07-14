@@ -17,7 +17,7 @@ from IPython.display import display
 
 from distances import compute_euclidean_distances
 from pitch_suggestions import (
-    suggest_pitches, _full_name, hb_in, vb_in,
+    suggest_pitches, make_cluster_fig, _full_name, hb_in, vb_in,
     BIOMECH_FEATURES, PITCH_CHAR_FEATURES,
     _tag_novelty, _find_target, _find_biomech_comps, _collect_pitches,
 )
@@ -26,82 +26,48 @@ from pitch_suggestions import (
 PARAMS = dict(min_pitches=20, biomech_distance_threshold=1.5,
               novelty_distance_threshold=1.2, min_comp_usage_pct=0.01)
 
-_MARKERS = ['circle', 'square', 'triangle-up', 'diamond', 'cross',
-            'x', 'triangle-down', 'triangle-left', 'triangle-right', 'hexagon']
-
 
 def make_validation_fig(result, actual, is_righty):
-    """App-style Pitcher-View break plot with the actual 2026 novel pitch overlaid as a red star."""
-    comp   = result['comp_pitches'].reset_index(drop=True)
-    target = result['target_pitches']
-    name   = target['player_name'].iloc[0]
-    keys   = sorted(comp[['cluster_label', 'cluster']].drop_duplicates().itertuples(index=False, name=None))
-    vmin, vmax = comp['release_speed'].min(), comp['release_speed'].max()
+    """The app's break plot (via make_cluster_fig), with the actual 2026 novel
+    pitch overlaid as a red star — the only difference from what the app shows."""
+    fig = make_cluster_fig(result, is_righty)
 
-    fig = go.Figure()
-    for i, (label, cid) in enumerate(keys):                                  # comp pitches, colored by velo
-        g = comp[(comp['cluster_label'] == label) & (comp['cluster'] == cid)]
-        fig.add_trace(go.Scatter(
-            x=hb_in(g['pfx_x']), y=vb_in(g['pfx_z']), mode='markers', name=f'Possible ({_full_name(label)})',
-            marker=dict(symbol=_MARKERS[i % len(_MARKERS)], size=8, color=g['release_speed'],
-                        colorscale='plasma', cmin=vmin, cmax=vmax, opacity=0.7, showscale=(i == 0),
-                        colorbar=dict(title=dict(text='Velo (mph)', side='right'), x=1.02, thickness=15, len=0.75) if i == 0 else None),
-            customdata=np.column_stack([g['player_name'], g['pitch_type'].map(_full_name), g['release_speed']]),
-            hovertemplate='<b>%{customdata[0]}</b><br>%{customdata[1]} — %{customdata[2]:.1f} mph<extra></extra>'))
-
-    cen = comp.groupby(['cluster_label', 'cluster'])[['pfx_x', 'pfx_z', 'release_speed']].mean().reset_index()
-    for i, (label, cid) in enumerate(keys):                                  # suggestion centroids
-        r = cen[(cen['cluster_label'] == label) & (cen['cluster'] == cid)].iloc[0]
-        fig.add_trace(go.Scatter(
-            x=[hb_in(r['pfx_x'])], y=[vb_in(r['pfx_z'])], mode='markers', name='Suggestion Centroid',
-            showlegend=(i == 0), legendgroup='centroid',
-            marker=dict(symbol=_MARKERS[i % len(_MARKERS)], size=16, color=[r['release_speed']],
-                        colorscale='plasma', cmin=vmin, cmax=vmax, line=dict(color='black', width=2)),
-            hovertemplate=f'<b>Suggestion: {_full_name(label)}</b><br>HB %{{x:.1f}} / IVB %{{y:.1f}} in<extra></extra>'))
-
-    fig.add_trace(go.Scatter(                                                # existing arsenal
-        x=hb_in(target['pfx_x']), y=vb_in(target['pfx_z']), mode='markers+text', name='Existing Pitch',
-        marker=dict(symbol='diamond', size=15, color='black'),
-        text=[_full_name(p) for p in target['pitch_type']], textposition='top right', textfont=dict(size=11, color='black'),
-        hovertemplate='Existing: %{text}<extra></extra>'))
-
-    fig.add_trace(go.Scatter(                                                # the actually-thrown 2026 novel pitch
-        x=hb_in(actual['pfx_x']), y=vb_in(actual['pfx_z']), mode='markers+text', name='Actual 2026 Novel',
+    fig.add_trace(go.Scatter(                            # the actually-thrown 2026 novel pitch
+        x=hb_in(actual['pfx_x']), y=vb_in(actual['pfx_z']), mode='markers+text',
+        name='Actual 2026 Novel',
         marker=dict(symbol='star', size=24, color='red', line=dict(color='black', width=1.5)),
-        text=[_full_name(p) for p in actual['pitch_type']], textposition='bottom center', textfont=dict(size=12, color='red'),
+        text=[_full_name(p) for p in actual['pitch_type']],
+        textposition='bottom center', textfont=dict(size=16, color='red'),
         customdata=np.column_stack([actual['pitch_type'].map(_full_name), actual['release_speed'], actual['min_dist_to_target']]),
-        hovertemplate='<b>ACTUAL 2026: %{customdata[0]}</b><br>%{customdata[1]:.1f} mph<br>HB %{x:.1f} / IVB %{y:.1f} in<br>novelty %{customdata[2]:.2f}<extra></extra>'))
-
-    ang = result['target_info']['arm_angle']                                # arm-angle ray (mirror RHP)
-    rad, d = np.radians(ang), (-1 if is_righty else 1)
-    fig.add_trace(go.Scatter(x=[0, hb_in(d * 1.5 * np.cos(rad))], y=[0, vb_in(1.5 * np.sin(rad))], mode='lines',
-        name='Arm Angle', line=dict(color='rgba(50,50,50,0.3)', width=6),
-        hovertemplate=f'Arm Angle {ang:.1f}°<extra></extra>'))
-
-    grid = dict(showgrid=True, gridcolor='lightgrey', zeroline=True, zerolinecolor='darkgrey', range=[-25.2, 25.2], constrain='domain')
-    fig.update_layout(
-        title=dict(text=f'Actual 2026 Novel Pitch vs. Suggestions — {name}<br><sup>Pitcher View</sup>', x=0.5, xanchor='center'),
-        xaxis_title='Horizontal Break (in)', yaxis_title='Induced Vertical Break (in)',
-        xaxis=grid, yaxis=dict(**grid, scaleanchor='x', scaleratio=1),
-        legend=dict(x=1.18, y=1, xanchor='left'), height=600, margin=dict(r=220))
+        hovertemplate=(
+            '<b>ACTUAL 2026: %{customdata[0]}</b><br>'
+            '%{customdata[1]:.1f} mph<br>'
+            'HBreak: %{x:.1f} in<br>'
+            'IVBreak: %{y:.1f} in<br>'
+            'Novelty: %{customdata[2]:.2f}'
+            '<extra></extra>'
+        ),
+    ))
     return fig
 
 
-def validate_pitcher(name, novel_2026, pools, throws, pitch_type_summ):
+def validate_pitcher(name, novel_2026, pools, throws, pitch_pools):
     """App-style profile + Arsenal/Suggestions info, with the actual 2026 novel pitch alongside.
 
     Parameters
     ----------
-    name            : player_name present in `novel_2026`
-    novel_2026      : frame of actual 2026 novel pitches (one+ rows per pitcher)
-    pools           : {'L'/'R': handedness pitcher-summary pool} for suggest_pitches
-    throws          : {pitcher_id: 'L'/'R'} handedness lookup
-    pitch_type_summ : pitch-type summary frame passed to suggest_pitches
+    name        : player_name present in `novel_2026`
+    novel_2026  : frame of actual 2026 novel pitches (one+ rows per pitcher)
+    pools       : {'L'/'R': handedness pitcher-summary pool} for suggest_pitches
+    throws      : {pitcher_id: 'L'/'R'} handedness lookup
+    pitch_pools : {'L'/'R': handedness pitch-type summary frame} for suggest_pitches,
+                  mirroring the app's per-hand frames
     """
     actual = novel_2026[novel_2026['player_name'] == name]
     pit_id = int(actual['pitcher'].iloc[0])
-    res    = suggest_pitches(pit_id, pools[throws[pit_id]], pitch_type_summ, **PARAMS)
-    is_r   = throws[pit_id] == 'R'
+    hand   = throws[pit_id]
+    res    = suggest_pitches(pit_id, pools[hand], pitch_pools[hand], **PARAMS)
+    is_r   = hand == 'R'
 
     if res['status'] != 'ok':
         print(f"No suggestions for {name} (status: {res['status']}).")
@@ -126,12 +92,13 @@ def validate_pitcher(name, novel_2026, pools, throws, pitch_type_summ):
                                 'IVBreak (in)': '{:.1f}', '# Comps': '{:.0f}'}, na_rep=''))
 
 
-def diagnose(pit_id, pools, throws, pitch_type_summ):
+def diagnose(pit_id, pools, throws, pitch_pools):
     """Walk suggest_pitches' pipeline for one pitcher and explain where (and why) it stops.
 
     Returns (status, n_comps, n_comp_pitches, n_novel, cause).
     """
-    pool = pools[throws[pit_id]]
+    hand = throws[pit_id]
+    pool, pitch_type_summ = pools[hand], pitch_pools[hand]
     status = suggest_pitches(pit_id, pool, pitch_type_summ, **PARAMS)['status']
 
     target_row, target_year = _find_target(pool, pit_id)
@@ -143,12 +110,14 @@ def diagnose(pit_id, pools, throws, pitch_type_summ):
                                 PARAMS['biomech_distance_threshold'], PARAMS['min_pitches'])
     if comps.empty:
         bd = compute_euclidean_distances(pool, features=BIOMECH_FEATURES,
-                                         label_cols=['pitcher', 'game_year'], min_pitches=20)
+                                         label_cols=['pitcher', 'game_year'],
+                                         min_pitches=PARAMS['min_pitches'])
         m = (((bd['pitcher1'] == pit_id) & (bd['game_year1'] == target_year)) |
              ((bd['pitcher2'] == pit_id) & (bd['game_year2'] == target_year)))
         nearest = bd[m & (bd['pitcher1'] != bd['pitcher2'])]['distance'].min()
         return status, 0, np.nan, np.nan, \
-            f"no biomech comp within 1.5 (nearest other pitcher = {nearest:.2f})"
+            f"no biomech comp within {PARAMS['biomech_distance_threshold']} " \
+            f"(nearest other pitcher = {nearest:.2f})"
 
     tp, cp = _collect_pitches(pitch_type_summ, pit_id, target_year, comps,
                               PITCH_CHAR_FEATURES, PARAMS['min_comp_usage_pct'], PARAMS['min_pitches'])
