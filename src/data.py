@@ -6,12 +6,6 @@ import requests
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-STATCAST_PATHS = {
-    'statcast_25':  '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2025_statcast.csv',
-    'statcast_2124': '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2021-24_statcast_update.csv',
-    'statcast_26': '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2026_statcast.csv',
-}
-
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SPIN_DIR = os.path.join(_REPO_ROOT, 'data', 'spin/')
@@ -28,16 +22,15 @@ PITCH_TYPE_COLUMNS = [
 
 # ── Data Loading ──────────────────────────────────────────────────────────────
 
-def load_statcast_local(paths=None):
+def load_statcast_local(paths):
     """
     Load Statcast data from local CSVs and concatenate into one DataFrame.
 
     Parameters:
-        paths : dict with keys 'statcast_25', 'statcast_2124', and 'statcast_26', or None to use defaults
+        paths : dict with keys 'statcast_25', 'statcast_2124', and 'statcast_26'
     Returns:
         Raw combined statcast DataFrame
     """
-    paths = paths or STATCAST_PATHS
     statcast_25   = pd.read_csv(paths['statcast_25'])
     statcast_2124 = pd.read_csv(paths['statcast_2124'])
     statcast_26   = pd.read_csv(paths['statcast_26'])
@@ -75,7 +68,10 @@ def load_statcast(live=False, paths=None, start_dt='2025-01-01', end_dt='2026-12
     """
     if live:
         return load_statcast_live(start_dt=start_dt, end_dt=end_dt)
-    return load_statcast_local(paths=paths)
+    if paths is None:
+        raise ValueError("live=False requires `paths` to local Statcast CSVs "
+                        "(the raw files are not part of this repo)")
+    return load_statcast_local(paths)
 
 
 def download_spin_files(years=None, spin_dir=None):
@@ -203,34 +199,6 @@ def build_spin_features(spin_raw):
     return df[['pitcher', 'active_spin_fastball', 'FB_type', 'year']]
 
 
-def fetch_player_heights(mlbam_ids):
-    """
-    Fetch height in inches for a list of MLBAM player IDs via the MLB Stats API.
-
-    Parameters:
-        mlbam_ids : list of MLBAM player IDs
-    Returns:
-        DataFrame with columns: pitcher, height_in
-    """
-    batch_size = 500
-    records    = []
-    for i in range(0, len(mlbam_ids), batch_size):
-        batch    = mlbam_ids[i:i + batch_size]
-        ids_str  = ','.join(str(x) for x in batch)
-        url      = f"https://statsapi.mlb.com/api/v1/people?personIds={ids_str}&fields=people,id,height"
-        response = requests.get(url)
-        response.raise_for_status()
-        for person in response.json().get('people', []):
-            height_str = person.get('height', '')
-            try:
-                feet, inches = height_str.replace('"', '').split("' ")
-                height_in    = int(feet) * 12 + int(inches)
-            except (ValueError, AttributeError):
-                height_in = None
-            records.append({'pitcher': person.get('id'), 'height_in': height_in})
-    return pd.DataFrame(records)
-
-
 def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join):
     """
     Aggregate to pitcher level and merge in pitch characteristics and spin data.
@@ -298,7 +266,7 @@ def build_pitch_type_views(pitch_type_summ):
 
 # ── Top-level Pipeline ────────────────────────────────────────────────────────
 
-def build_all(live=False, paths=None, spin_dir=None, include_heights=False):
+def build_all(live=False, paths=None, spin_dir=None):
     """
     Run the full data preparation pipeline and return all DataFrames needed by downstream modules.
 
