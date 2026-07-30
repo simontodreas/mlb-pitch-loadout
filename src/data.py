@@ -231,6 +231,32 @@ def fetch_player_heights(mlbam_ids):
     return pd.DataFrame(records)
 
 
+def build_pitcher_team(statcast_clean):
+    """
+    Determine each pitcher's team per season, using the team they most recently
+    pitched for (handles mid-season trades).
+
+    The pitching team is the home team when the pitch is thrown in the top of the
+    inning (away team bats) and the away team in the bottom.
+
+    Parameters:
+        statcast_clean : cleaned statcast DataFrame
+    Returns:
+        DataFrame with columns: pitcher, game_year, team
+    """
+    df = statcast_clean[
+        ['pitcher', 'game_year', 'home_team', 'away_team', 'inning_topbot', 'game_date']
+    ].copy()
+    df['team'] = np.where(df['inning_topbot'] == 'Top', df['home_team'], df['away_team'])
+    return (
+        df.dropna(subset=['team'])
+          .sort_values('game_date')
+          .groupby(['pitcher', 'game_year'])['team']
+          .last()
+          .reset_index()
+    )
+
+
 def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join):
     """
     Aggregate to pitcher level and merge in pitch characteristics and spin data.
@@ -278,6 +304,9 @@ def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join):
     pitcher_summ = pitcher_summ.merge(
         spin_df_join, left_on=['pitcher', 'game_year'], right_on=['pitcher', 'year'], how='inner' # Changed to inner join to ensure we only keep pitchers with spin data
     ).drop(columns='year')
+
+    pitcher_team = build_pitcher_team(statcast_clean)
+    pitcher_summ = pitcher_summ.merge(pitcher_team, on=['pitcher', 'game_year'], how='left')
 
     return pitcher_summ
 
