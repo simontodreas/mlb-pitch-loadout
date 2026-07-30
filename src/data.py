@@ -94,18 +94,20 @@ def download_spin_files(years=None, spin_dir=None):
         print(f'  downloaded active-spin_{str(year)[-2:]}.csv ({len(response.content):,} bytes)')
 
 
-def load_spin_data(spin_dir=None):
+def load_spin_data(spin_dir=None, years=None):
     """
     Load and combine active spin CSVs across years.
 
     Parameters:
         spin_dir : path to folder containing active-spin_YY.csv files
+        years    : list of years to load (defaults to SPIN_YEARS)
     Returns:
         Combined spin DataFrame with 'year' column
     """
     spin_dir = spin_dir or SPIN_DIR
+    years    = years or SPIN_YEARS
     frames = []
-    for year in SPIN_YEARS:
+    for year in years:
         yy = str(year)[-2:]
         df = pd.read_csv(f'{spin_dir}active-spin_{yy}.csv')
         df['year'] = year
@@ -199,6 +201,32 @@ def build_spin_features(spin_raw):
     return df[['pitcher', 'active_spin_fastball', 'FB_type', 'year']]
 
 
+def build_pitcher_team(statcast_clean):
+    """
+    Determine each pitcher's team per season, using the team they most recently
+    pitched for (handles mid-season trades).
+
+    The pitching team is the home team when the pitch is thrown in the top of the
+    inning (away team bats) and the away team in the bottom.
+
+    Parameters:
+        statcast_clean : cleaned statcast DataFrame
+    Returns:
+        DataFrame with columns: pitcher, game_year, team
+    """
+    df = statcast_clean[
+        ['pitcher', 'game_year', 'home_team', 'away_team', 'inning_topbot', 'game_date']
+    ].copy()
+    df['team'] = np.where(df['inning_topbot'] == 'Top', df['home_team'], df['away_team'])
+    return (
+        df.dropna(subset=['team'])
+          .sort_values('game_date')
+          .groupby(['pitcher', 'game_year'])['team']
+          .last()
+          .reset_index()
+    )
+
+
 def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join):
     """
     Aggregate to pitcher level and merge in pitch characteristics and spin data.
@@ -246,6 +274,9 @@ def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join):
     pitcher_summ = pitcher_summ.merge(
         spin_df_join, left_on=['pitcher', 'game_year'], right_on=['pitcher', 'year'], how='inner' # Changed to inner join to ensure we only keep pitchers with spin data
     ).drop(columns='year')
+
+    pitcher_team = build_pitcher_team(statcast_clean)
+    pitcher_summ = pitcher_summ.merge(pitcher_team, on=['pitcher', 'game_year'], how='left')
 
     return pitcher_summ
 

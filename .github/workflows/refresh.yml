@@ -1,0 +1,51 @@
+name: Daily data refresh
+
+# Rebuilds the current season's rows in the committed Parquet snapshot from live
+# Statcast + active-spin data and pushes the result to main. Streamlit Cloud
+# auto-redeploys on push, so the live app picks up fresh data each day.
+
+on:
+  schedule:
+    # 11:00 UTC daily (~6-7am US Eastern), after the prior day's games are final,
+    # but only March–November (months 3-11) — no off-season refreshes. On days
+    # inside that window with no games, the job is a harmless no-op (nothing to
+    # commit). workflow_dispatch below still allows a manual run any time of year.
+    - cron: '0 11 * 3-10 *'
+  workflow_dispatch:   # allow manual runs from the Actions tab
+
+permissions:
+  contents: write      # lets the job commit the refreshed snapshot back to main
+
+concurrency:
+  group: daily-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install refresh dependencies
+        run: pip install -r requirements-refresh.txt
+
+      - name: Rebuild current-season snapshot
+        run: python -m src.refresh
+
+      - name: Commit and push if the snapshot changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/snapshots data/spin
+          if git diff --cached --quiet; then
+            echo "No data changes; nothing to commit."
+          else
+            git commit -m "Daily data refresh ($(date -u +%Y-%m-%d))"
+            git push
+          fi
