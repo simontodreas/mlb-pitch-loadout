@@ -15,6 +15,25 @@ from src.pitch_suggestions import (suggest_pitches, make_cluster_fig, _full_name
 SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'snapshots')
 SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']
 
+# Statcast team codes -> full club names, for the pitcher profile display.
+TEAM_NAMES = {
+    'ATH': 'Athletics',           'ATL': 'Atlanta Braves',
+    'AZ':  'Arizona Diamondbacks', 'BAL': 'Baltimore Orioles',
+    'BOS': 'Boston Red Sox',      'CHC': 'Chicago Cubs',
+    'CIN': 'Cincinnati Reds',     'CLE': 'Cleveland Guardians',
+    'COL': 'Colorado Rockies',    'CWS': 'Chicago White Sox',
+    'DET': 'Detroit Tigers',      'HOU': 'Houston Astros',
+    'KC':  'Kansas City Royals',  'LAA': 'Los Angeles Angels',
+    'LAD': 'Los Angeles Dodgers', 'MIA': 'Miami Marlins',
+    'MIL': 'Milwaukee Brewers',   'MIN': 'Minnesota Twins',
+    'NYM': 'New York Mets',       'NYY': 'New York Yankees',
+    'PHI': 'Philadelphia Phillies', 'PIT': 'Pittsburgh Pirates',
+    'SD':  'San Diego Padres',    'SEA': 'Seattle Mariners',
+    'SF':  'San Francisco Giants', 'STL': 'St. Louis Cardinals',
+    'TB':  'Tampa Bay Rays',      'TEX': 'Texas Rangers',
+    'TOR': 'Toronto Blue Jays',   'WSH': 'Washington Nationals',
+}
+
 st.set_page_config(page_title="MLB Pitch Loadout", layout="wide")
 
 st.markdown("""
@@ -236,6 +255,12 @@ with bio_col:
     )
     _last, _, _first = str(info['player_name']).partition(', ')
     _display_name = f"{_first} {_last}".strip()
+    _team = info.get('team')
+    _team_name = TEAM_NAMES.get(_team, _team) if isinstance(_team, str) and _team else None
+    _team_row = (
+        f'<div style="color:#0b0b0b; font-size:0.9rem;">{_team_name}</div>'
+        if _team_name else ''
+    )
     st.markdown(f"""
     <div style="display:flex; align-items:center; gap:14px; padding:10px 14px;
                 background:#f0efec; border:1px solid rgba(11,11,11,0.10);
@@ -244,6 +269,7 @@ with bio_col:
         style="border-radius:50%; background:#fcfcfb; border:1px solid rgba(11,11,11,0.10);"/>
     <div>
         <div style="font-size:1.15rem; font-weight:700; color:#0b0b0b;">{_display_name}</div>
+        {_team_row}
         <div style="color:#52514e; font-size:0.9rem;">{throws} &middot; {int(info['game_year'])} Season</div>
     </div>
     </div>
