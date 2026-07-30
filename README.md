@@ -16,8 +16,7 @@ The goal of MLB Pitch Loadout is to provide MLB pitchers with reasonable suggest
 6. Steps 4 and 5 repeat until there are no more outliers.
 7. The clusters of novel pitches are named for their most common pitch type, and the user sees this as suggested pitches for the pitcher
 
-Data: 2021–2026 Statcast pitch data plus Baseball Savant's active-spin
-leaderboards.
+Data: 2021–2026 Statcast pitch data plus Baseball Savant's active-spin leaderboards updated daily during the season.
 
 ## Running locally
 
