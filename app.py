@@ -261,19 +261,23 @@ with bio_col:
         f'<div style="color:#0b0b0b; font-size:0.9rem;">{_team_name}</div>'
         if _team_name else ''
     )
-    st.markdown(f"""
-    <div style="display:flex; align-items:center; gap:14px; padding:10px 14px;
-                background:#f0efec; border:1px solid rgba(11,11,11,0.10);
-                border-radius:12px; margin-bottom:12px;">
-    <img src="{_headshot}" width="72" alt="{_display_name}"
-        style="border-radius:50%; background:#fcfcfb; border:1px solid rgba(11,11,11,0.10);"/>
-    <div>
-        <div style="font-size:1.15rem; font-weight:700; color:#0b0b0b;">{_display_name}</div>
-        {_team_row}
-        <div style="color:#52514e; font-size:0.9rem;">{throws} &middot; {int(info['game_year'])} Season</div>
-    </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Built as a single string with no internal newlines/indentation: Streamlit's
+    # markdown treats a blank line (e.g. an empty {_team_row}) as terminating the
+    # raw-HTML block, after which the indented divs render as literal code text.
+    st.markdown(
+        '<div style="display:flex; align-items:center; gap:14px; padding:10px 14px; '
+        'background:#f0efec; border:1px solid rgba(11,11,11,0.10); '
+        'border-radius:12px; margin-bottom:12px;">'
+        f'<img src="{_headshot}" width="72" alt="{_display_name}" '
+        'style="border-radius:50%; background:#fcfcfb; border:1px solid rgba(11,11,11,0.10);"/>'
+        '<div>'
+        f'<div style="font-size:1.15rem; font-weight:700; color:#0b0b0b;">{_display_name}</div>'
+        f'{_team_row}'
+        f'<div style="color:#52514e; font-size:0.9rem;">{throws} &middot; {int(info["game_year"])} Season</div>'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     profile_stats = [
         ('Arm Angle',         f"{info['arm_angle']:.0f}°"),
