@@ -98,18 +98,20 @@ def download_spin_files(years=None, spin_dir=None):
         print(f'  downloaded active-spin_{str(year)[-2:]}.csv ({len(response.content):,} bytes)')
 
 
-def load_spin_data(spin_dir=None):
+def load_spin_data(spin_dir=None, years=None):
     """
     Load and combine active spin CSVs across years.
 
     Parameters:
         spin_dir : path to folder containing active-spin_YY.csv files
+        years    : list of years to load (defaults to SPIN_YEARS)
     Returns:
         Combined spin DataFrame with 'year' column
     """
     spin_dir = spin_dir or SPIN_DIR
+    years    = years or SPIN_YEARS
     frames = []
-    for year in SPIN_YEARS:
+    for year in years:
         yy = str(year)[-2:]
         df = pd.read_csv(f'{spin_dir}active-spin_{yy}.csv')
         df['year'] = year
